@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Node
+node_modules/
+
+# Memory stores (live on host, not baked into image)
+memory/chroma/
+memory/logs/
+memory/agent.db
+memory/memory.txt
+
+# Workspace (volume-mounted at runtime)
+workspace/
+
+# IDE / OS
+.git/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Env
+.env
+.env.*

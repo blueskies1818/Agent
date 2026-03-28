@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Environment
+.env
+
+# Logs and memory (optional — you may want to track memory.txt)
+memory/chroma/
+memory/logs/
+memory/memory.txt
+.db
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Workspace contents (AI's sandbox — don't commit generated files)
+workspace/*

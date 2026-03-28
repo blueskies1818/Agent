@@ -1,0 +1,386 @@
+"""
+mods/debug_ui/debug_ui.py — Headless UI debugging.
+
+Launch GUI applications inside the sandbox's virtual display,
+take screenshots, and interact via mouse/keyboard — all without
+a physical monitor.
+
+The live frame server starts automatically when the display is
+created — the user can watch at http://localhost:9222 or with
+python viewer.py.  No commands needed to manage the stream.
+
+Intercepted shell syntax:
+    debug_ui -start "python app.py"
+    debug_ui -screenshot
+    debug_ui -click 640 400
+    debug_ui -double-click 640 400
+    debug_ui -right-click 640 400
+    debug_ui -type "hello world"
+    debug_ui -key Return
+    debug_ui -key ctrl+s
+    debug_ui -scroll up
+    debug_ui -scroll down
+    debug_ui -drag 100 200 300 400
+    debug_ui -close
+"""
+
+from __future__ import annotations
+
+import re
+import time
+
+from config import DISPLAY_RESOLUTION, DISPLAY_NUMBER, UI_SETTLE_DELAY
+from engine.mod_api import ModResult, log_action
+from engine.sandbox import run_command, read_file, is_docker
+
+NAME        = "debug_ui"
+DESCRIPTION = "Launch and interact with GUI applications via headless display"
+
+_SCREENSHOT_PATH = "/tmp/_debug_ui_screenshot.png"
+
+# How long to wait for an app to render its first frame after launch.
+_STARTUP_DELAY = 3.0
+
+# How many times to retry capturing if the screen looks blank.
+_MAX_CAPTURE_RETRIES = 8
+_RETRY_INTERVAL = 2.0
+
+
+def handle(args: list[str], raw: str) -> ModResult:
+    """Dispatch to the appropriate UI action."""
+    if not is_docker():
+        return ModResult(
+            text="[ERROR] debug_ui requires Docker sandbox mode.\n"
+                 "Launch with: SANDBOX=docker ./start.sh\n"
+                 "The virtual display runs inside the Docker container."
+        )
+
+    if not args:
+        return ModResult(text=_usage())
+
+    flag = args[0].lower().lstrip("-")
+
+    if flag == "start":
+        cmd = _extract_quoted(args[1:], raw, "-start")
+        if not cmd:
+            return ModResult(text="[ERROR] debug_ui -start requires a command.\n" + _usage())
+        return _start(cmd)
+
+    elif flag == "screenshot":
+        return _screenshot()
+
+    elif flag == "click" and len(args) >= 3:
+        return _click(args[1], args[2])
+
+    elif flag in ("double-click", "doubleclick", "dclick") and len(args) >= 3:
+        return _double_click(args[1], args[2])
+
+    elif flag in ("right-click", "rightclick", "rclick") and len(args) >= 3:
+        return _right_click(args[1], args[2])
+
+    elif flag == "type":
+        text = _extract_quoted(args[1:], raw, "-type")
+        if not text:
+            return ModResult(text="[ERROR] debug_ui -type requires text.\n" + _usage())
+        return _type_text(text)
+
+    elif flag == "key" and len(args) >= 2:
+        return _press_key(args[1])
+
+    elif flag == "scroll" and len(args) >= 2:
+        return _scroll(args[1].lower())
+
+    elif flag == "drag" and len(args) >= 5:
+        return _drag(args[1], args[2], args[3], args[4])
+
+    elif flag == "close":
+        return _close()
+
+    else:
+        return ModResult(text=f"[ERROR] Unknown debug_ui command: '{flag}'\n" + _usage())
+
+
+# ── Display lifecycle ─────────────────────────────────────────────────────────
+
+def _ensure_display() -> str | None:
+    """
+    Start Xvfb, dbus, and the frame server if not already running.
+    Returns error text or None.
+    """
+    # In debug_ui.py, after starting Xvfb:
+    for _ in range(10):
+        if run_command(f"xdpyinfo -display :{DISPLAY_NUMBER}").exit_code == 0:
+            break
+        time.sleep(0.5)
+        
+    check = run_command(f"xdpyinfo -display {DISPLAY_NUMBER} >/dev/null 2>&1 && echo UP || echo DOWN")
+
+    if "UP" not in check:
+        # Display not running — start it
+        run_command("dbus-daemon --session --fork --address=unix:path=/tmp/dbus-session 2>/dev/null || true")
+
+        result = run_command(
+            f"Xvfb {DISPLAY_NUMBER} -screen 0 {DISPLAY_RESOLUTION} -ac +extension GLX +render -noreset &"
+            f" sleep 0.5 && echo STARTED"
+        )
+        if "STARTED" not in result:
+            return f"[ERROR] Failed to start virtual display: {result}"
+
+    # Always ensure frame server is registered — whether we just created
+    # the display or it was already running from a previous command.
+    from engine.frame_server import is_serving, register_source
+    if not is_serving():
+        register_source(_capture)
+
+    return None
+
+
+def _capture() -> bytes | None:
+    # Clear old files so we don't read ghosts
+    run_command(f"rm -f {_SCREENSHOT_PATH} {_SCREENSHOT_PATH}.tmp")
+    
+    # Write to a .tmp file first. The final file is ONLY created if both commands succeed.
+    run_command(
+        f"DISPLAY={DISPLAY_NUMBER} import -window root png:{_SCREENSHOT_PATH}.tmp && "
+        f"convert {_SCREENSHOT_PATH}.tmp -depth 8 -type TrueColor png:{_SCREENSHOT_PATH}"
+    )
+    
+    # If the command failed, the final file won't exist, and this will safely return None
+    return read_file(_SCREENSHOT_PATH)
+
+
+def _is_blank(img_bytes: bytes) -> bool:
+    """
+    Check if a screenshot is blank/black.
+
+    A solid-color 1280×800 PNG compresses to under 15KB.
+    Real UI content with text, buttons, and colors produces 50KB+.
+    """
+    return len(img_bytes) < 15_000
+
+
+def _capture_after_action() -> tuple[str, list[bytes]]:
+    """Capture after a click/type/key — short settle, warns if blank."""
+    time.sleep(UI_SETTLE_DELAY)
+    img = _capture()
+    if not img:
+        return "screenshot failed — display may not be running", []
+    if _is_blank(img):
+        return (
+            "screenshot captured but screen appears blank — "
+            "the app may have crashed or closed. "
+            "Try debug_ui -screenshot to check, or re-launch the app.",
+            [img],
+        )
+    return "screenshot captured", [img]
+
+
+def _capture_with_retry() -> tuple[str, list[bytes]]:
+    """
+    Capture with retries — used after app startup and explicit screenshots.
+
+    Total max wait: _MAX_CAPTURE_RETRIES × _RETRY_INTERVAL = 16 seconds.
+    """
+    img = None
+    for attempt in range(1, _MAX_CAPTURE_RETRIES + 1):
+        img = _capture()
+        if img and not _is_blank(img):
+            return f"screenshot captured (attempt {attempt})", [img]
+        if attempt < _MAX_CAPTURE_RETRIES:
+            print(f"  [debug_ui] screen blank, retrying ({attempt}/{_MAX_CAPTURE_RETRIES})...",
+                  flush=True)
+            time.sleep(_RETRY_INTERVAL)
+
+    if img:
+        return (
+            f"screenshot captured but screen appears blank after "
+            f"{_MAX_CAPTURE_RETRIES} attempts ({_MAX_CAPTURE_RETRIES * _RETRY_INTERVAL:.0f}s). "
+            f"The app may still be loading — try debug_ui -screenshot again in a moment.",
+            [img],
+        )
+    return "screenshot failed — display may not be running", []
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def _start(command: str) -> ModResult:
+    """Launch an application on the virtual display."""
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    # Use nohup + setsid so the process survives after docker exec's
+    # bash shell exits.
+    # DBUS_SESSION_BUS_ADDRESS is set for GTK apps (Firefox, etc.)
+    run_command(
+        f"nohup setsid env DISPLAY={DISPLAY_NUMBER} "
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/dbus-session "
+        f"MOZ_DISABLE_CONTENT_SANDBOX=1 "
+        f"{command} > /tmp/_debug_ui_app.log 2>&1 &"
+    )
+    log_action(f"launched: {command}", source="debug_ui")
+
+    time.sleep(_STARTUP_DELAY)
+
+    status, images = _capture_with_retry()
+
+    # If still blank, include the app's stderr for debugging
+    if not images or (images and _is_blank(images[0])):
+        app_log = run_command("tail -20 /tmp/_debug_ui_app.log 2>/dev/null || echo '(no log)'")
+        return ModResult(
+            text=f"Application launched: {command}\n{status}\n\n"
+                 f"App log (may indicate why screen is blank):\n{app_log}",
+            images=images,
+        )
+
+    return ModResult(
+        text=f"Application launched: {command}\n{status}",
+        images=images,
+    )
+
+
+def _screenshot() -> ModResult:
+    """Capture the current screen without any interaction."""
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    status, images = _capture_with_retry()
+    log_action("took screenshot", source="debug_ui")
+    return ModResult(text=status, images=images)
+
+
+def _click(x: str, y: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 1")
+    log_action(f"clicked at ({x}, {y})", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"clicked at ({x}, {y}) — {status}", images=images)
+
+
+def _double_click(x: str, y: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click --repeat 2 1")
+    log_action(f"double-clicked at ({x}, {y})", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"double-clicked at ({x}, {y}) — {status}", images=images)
+
+
+def _right_click(x: str, y: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 3")
+    log_action(f"right-clicked at ({x}, {y})", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"right-clicked at ({x}, {y}) — {status}", images=images)
+
+
+def _type_text(text: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    safe = text.replace("'", "'\\''")
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool type --delay 50 '{safe}'")
+    log_action(f"typed: \"{text}\"", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"typed \"{text}\" — {status}", images=images)
+
+
+def _press_key(key: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool key {key}")
+    log_action(f"pressed key: {key}", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"pressed {key} — {status}", images=images)
+
+
+def _scroll(direction: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    button = "4" if direction == "up" else "5"
+    run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool click --repeat 3 {button}")
+    log_action(f"scrolled {direction}", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"scrolled {direction} — {status}", images=images)
+
+
+def _drag(x1: str, y1: str, x2: str, y2: str) -> ModResult:
+    err = _ensure_display()
+    if err:
+        return ModResult(text=err)
+
+    run_command(
+        f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x1} {y1} "
+        f"mousedown 1 mousemove {x2} {y2} mouseup 1"
+    )
+    log_action(f"dragged from ({x1},{y1}) to ({x2},{y2})", source="debug_ui")
+
+    status, images = _capture_after_action()
+    return ModResult(text=f"dragged ({x1},{y1})→({x2},{y2}) — {status}", images=images)
+
+
+def _close() -> ModResult:
+    """Kill all applications, stop frame server, stop Xvfb."""
+    from engine.frame_server import unregister_source
+
+    unregister_source()
+
+    run_command(f"pkill -f 'DISPLAY={DISPLAY_NUMBER}' 2>/dev/null || true")
+    run_command(f"pkill -f 'Xvfb {DISPLAY_NUMBER}' 2>/dev/null || true")
+
+    log_action("closed debug_ui session", source="debug_ui")
+    return ModResult(text="Display and applications closed.")
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _extract_quoted(args: list[str], raw: str, flag: str) -> str:
+    pattern = rf'{flag}\s+"([^"]+)"'
+    m = re.search(pattern, raw)
+    if m:
+        return m.group(1)
+
+    pattern = rf"{flag}\s+'([^']+)'"
+    m = re.search(pattern, raw)
+    if m:
+        return m.group(1)
+
+    if args:
+        return " ".join(args).strip("\"'")
+    return ""
+
+
+def _usage() -> str:
+    return """Usage:
+  debug_ui -start "python app.py"     Launch app, return screenshot
+  debug_ui -screenshot                Fresh screenshot
+  debug_ui -click 640 400             Left click at (x, y)
+  debug_ui -double-click 640 400      Double click
+  debug_ui -right-click 640 400       Right click
+  debug_ui -type "hello world"        Type text at current focus
+  debug_ui -key Return                Press a key (Return, Tab, Escape, ctrl+s)
+  debug_ui -scroll up                 Scroll up/down
+  debug_ui -drag 100 200 300 400      Drag from (x1,y1) to (x2,y2)
+  debug_ui -close                     Kill app and stop display
+
+Live view is automatic — open http://localhost:9222 or run: python viewer.py"""
