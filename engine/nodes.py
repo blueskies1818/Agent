@@ -73,15 +73,24 @@ def _run_shell(command: str) -> ModResult:
     """
     Execute a shell command.  Returns ModResult (text + optional images).
 
-    Checks mods first (may return images), then falls through to sandbox.
+    Interpolates <<CREDENTIAL>> placeholders before execution and scrubs
+    credential values from output before returning — the LLM never sees
+    raw values in either direction.
     """
+    try:
+        from mods.passwd.cache import interpolate, scrub
+        command = interpolate(command)
+        _scrub = scrub
+    except Exception:
+        _scrub = lambda t: t  # noqa: E731
+
     router = _get_mod_router()
     hit, result = router.try_handle(command)
     if hit:
-        return result
+        return ModResult(text=_scrub(result.text), images=result.images)
 
     output = run_command(command)
-    return ModResult(text=output)
+    return ModResult(text=_scrub(output))
 
 
 def _load_skill(name: str) -> ModResult:
@@ -539,22 +548,24 @@ def actor(state: AgentState, agent, loaded_skills: set[str]) -> dict:
         new_messages.append(_build_message(continue_text, all_images))
 
     # ── Embed this exchange into ChromaDB ─────────────────────────────────
-    if done:
-        try:
-            original_user = next(
-                (m["content"] for m in state["messages"]
-                 if m["role"] == "user" and isinstance(m["content"], str)),
-                "",
+    # Fire on every actor turn so intermediate work steps are also retrievable.
+    # The "intermediate" flag lets callers filter for final-only results if needed.
+    try:
+        original_user = next(
+            (m["content"] for m in state["messages"]
+             if m["role"] == "user" and isinstance(m["content"], str)),
+            "",
+        )
+        assistant_reply = (reasoning or closing) if done else reasoning
+        if original_user and assistant_reply:
+            embed_conversation_turn(
+                user=original_user,
+                assistant=assistant_reply,
+                metadata={"actor_turn": state["actor_turn"], "intermediate": not done},
             )
-            assistant_reply = (reasoning or closing) if done else reasoning
-            if original_user and assistant_reply:
-                embed_conversation_turn(
-                    user=original_user,
-                    assistant=assistant_reply,
-                    metadata={"actor_turn": state["actor_turn"]},
-                )
-        except Exception:
-            pass
+    except Exception as e:
+        import sys
+        print(f"[warn] actor turn embedding failed: {e}", file=sys.stderr)
 
     return {
         "messages":     new_messages,

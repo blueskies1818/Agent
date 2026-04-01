@@ -65,16 +65,22 @@ class PromptEvaluator:
 
         for md_file in sorted(self._skills_dir.glob("*.md")):
             name = md_file.stem.lower()
-            keywords = _SKILL_KEYWORDS.get(name, [name])
+
+            try:
+                content = md_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+
+            # Prefer frontmatter keywords; fall back to hardcoded registry then skill name
+            keywords = _parse_frontmatter_keywords(content) or _SKILL_KEYWORDS.get(name, [name])
 
             if not any(kw in text_lower for kw in keywords):
                 continue
 
-            try:
-                first_line = md_file.read_text(encoding="utf-8").strip().splitlines()[0]
-                first_line = first_line.lstrip("#").strip()
-            except Exception:
-                first_line = name
+            first_line = next(
+                (ln.lstrip("#").strip() for ln in content.splitlines() if ln.startswith("#")),
+                name,
+            )
 
             pages.append(RetrievedPage(
                 content=f"Skill available: '{name}' — {first_line}\n"
@@ -84,6 +90,34 @@ class PromptEvaluator:
             ))
 
         return pages
+
+
+# ── Frontmatter keyword parser ────────────────────────────────────────────────
+
+def _parse_frontmatter_keywords(content: str) -> list[str]:
+    """
+    Extract keywords from a skill file's YAML frontmatter block.
+
+    Expects the file to start with --- and contain a keywords: field:
+        ---
+        keywords: ffmpeg, video, convert, encode
+        ---
+
+    Returns an empty list if no frontmatter or no keywords field is found,
+    so the caller can fall back to the hardcoded _SKILL_KEYWORDS registry.
+    """
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return []
+    end = stripped.find("\n---", 3)
+    if end == -1:
+        return []
+    frontmatter = stripped[3:end]
+    for line in frontmatter.splitlines():
+        if line.strip().startswith("keywords:"):
+            value = line.split(":", 1)[1].strip()
+            return [kw.strip().lower() for kw in value.split(",") if kw.strip()]
+    return []
 
 
 # ── Skill keyword registry ─────────────────────────────────────────────────────

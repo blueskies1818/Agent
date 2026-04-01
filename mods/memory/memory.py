@@ -21,8 +21,9 @@ The mod searches across all memory stores:
 
 from __future__ import annotations
 
-import re
 import sqlite3
+
+from mods._shared import extract_quoted as _extract_quoted
 
 NAME        = "memory"
 DESCRIPTION = "Query, read, or write persistent memory across sessions"
@@ -69,25 +70,6 @@ def handle(args: list[str], raw: str) -> str:
         return f"[ERROR] Unknown memory operation: '{flag}'\n" + _usage()
 
 
-# ── Argument parsing helpers ──────────────────────────────────────────────────
-
-def _extract_quoted(args: list[str], raw: str, flag: str) -> str:
-    """Extract the value after a flag, handling quoted and unquoted forms."""
-    pattern = rf'{flag}\s+"([^"]+)"'
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    pattern = rf"{flag}\s+'([^']+)'"
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    if args:
-        return " ".join(args).strip("\"'")
-    return ""
-
-
 def _parse_blob_filters(args: list[str]) -> dict:
     """Parse key=value pairs from blob list args."""
     filters: dict = {}
@@ -101,12 +83,8 @@ def _parse_blob_filters(args: list[str]) -> dict:
 # ── DB connection helper ──────────────────────────────────────────────────────
 
 def _get_db() -> sqlite3.Connection | None:
-    """Try to get a live DB connection.  Returns None if unavailable."""
-    try:
-        from memory.db import init_db
-        return init_db()
-    except Exception:
-        return None
+    from memory.db import get_db
+    return get_db()
 
 
 # ── Operations ────────────────────────────────────────────────────────────────

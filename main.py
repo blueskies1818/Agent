@@ -42,10 +42,6 @@ def main() -> None:
             if not user_input:
                 continue
 
-            # Block inputs that are only whitespace or newlines
-            if not user_input.strip():
-                continue
-
             if user_input.lower() in {"exit", "quit", "q"}:
                 break
 

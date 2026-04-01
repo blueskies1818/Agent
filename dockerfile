@@ -21,6 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # which we intentionally drop for container security.  Firefox still works
 # fine without it since the Docker container IS the sandbox.
 ENV MOZ_DISABLE_CONTENT_SANDBOX=1
+ENV MOZ_DISABLE_SANDBOX=1
 
 # ── Core tools ────────────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -73,4 +74,4 @@ RUN mkdir -p /workspace
 
 # ── Idle entrypoint ───────────────────────────────────────────────────────────
 WORKDIR /workspace
-CMD ["tail", "-f", "/dev/null"]y
+CMD ["tail", "-f", "/dev/null"]

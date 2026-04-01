@@ -292,7 +292,7 @@ def _start_container() -> None:
     """Start the sandbox container with the correct volume mount."""
     subprocess.run(
         ["docker", "rm", "-f", DOCKER_CONTAINER_NAME],
-        capture_output=True, timeout=10,
+        capture_output=True, timeout=30,
     )
 
     # Always bind-mount a host directory so files sync both ways.

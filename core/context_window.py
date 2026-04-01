@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Callable, Literal
 
 Source = Literal["system", "agent", "memory", "skill", "user"]
 
@@ -74,12 +74,14 @@ class ContextWindow:
         max_tokens: int,
         relevance_weight: float = 0.6,
         recency_weight: float = 0.4,
+        on_evict: Callable[[Page], None] | None = None,
     ) -> None:
-        self._max_tokens       = max_tokens
-        self._rel_w            = relevance_weight
-        self._rec_w            = recency_weight
+        self._max_tokens        = max_tokens
+        self._rel_w             = relevance_weight
+        self._rec_w             = recency_weight
         self._pages: list[Page] = []
-        self._turn             = 0
+        self._turn              = 0
+        self._on_evict          = on_evict
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -98,9 +100,16 @@ class ContextWindow:
 
         If adding it would exceed max_tokens, the lowest-scored page is
         evicted first (repeat until it fits or only one page remains).
+        Credential values are scrubbed before storage as a safety net.
         """
         if not content or not content.strip():
             return
+
+        try:
+            from mods.passwd.cache import scrub
+            content = scrub(content)
+        except Exception:
+            pass
 
         page = Page(
             content=content.strip(),
@@ -170,8 +179,9 @@ class ContextWindow:
     def _evict_if_needed(self) -> None:
         """Evict lowest-scored pages until total tokens fit within the budget."""
         while self._total_tokens() > self._max_tokens and len(self._pages) > 1:
-            # Score all pages and remove the weakest
             weakest = min(self._pages, key=self.score)
+            if self._on_evict is not None:
+                self._on_evict(weakest)
             self._pages.remove(weakest)
 
     def __repr__(self) -> str:

@@ -12,7 +12,7 @@ fetch pages, extract relevant chunks, and return focused context.
 
 from __future__ import annotations
 
-import re
+from mods._shared import extract_quoted as _extract_quoted
 
 NAME        = "search_web"
 DESCRIPTION = "Search the internet and return relevant text excerpts"
@@ -45,43 +45,6 @@ def handle(args: list[str], raw: str) -> str:
         if query:
             return _search(query)
         return _usage()
-
-
-# ── Argument helpers ──────────────────────────────────────────────────────────
-
-def _extract_quoted(args: list[str], raw: str, flag: str) -> str:
-    """Extract the value after a flag, handling quoted and unquoted forms."""
-    pattern = rf'{flag}\s+"([^"]+)"'
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    pattern = rf"{flag}\s+'([^']+)'"
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    try:
-        flag_clean = flag.lstrip("-")
-        for i, a in enumerate(args):
-            if a.lower().lstrip("-") == flag_clean:
-                parts = []
-                for j in range(i + 1, len(args)):
-                    if args[j].startswith("-"):
-                        break
-                    parts.append(args[j])
-                return " ".join(parts).strip("\"'")
-    except Exception:
-        pass
-
-    try:
-        idx = next(i for i, a in enumerate(args) if a.lower().lstrip("-") == flag.lstrip("-"))
-        remaining = args[idx + 1:]
-        return " ".join(remaining).strip("\"'")
-    except (StopIteration, IndexError):
-        pass
-
-    return ""
 
 
 def _extract_int(args: list[str], raw: str, flag: str, default: int | None = None) -> int | None:

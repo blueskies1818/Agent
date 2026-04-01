@@ -2,10 +2,12 @@
 engine/loop.py — Thin session wrapper around the LangGraph.
 """
 
+import sys
 from pathlib import Path
 
 from agents.base import BaseAgent
 from config import (
+    EVICTION_SAVE_THRESHOLD,
     MAX_CONTEXT_TOKENS,
     MODS_DIR,
     RAG_MIN_SCORE,
@@ -15,14 +17,39 @@ from config import (
     SKILLS_DIR,
     SOUL_FILE,
 )
-from core.context_window import ContextWindow
+from core.context_window import ContextWindow, Page
 from core.prompt_evaluator import PromptEvaluator
 from core.xml_parser import parse_response
 from engine.graph import build_graph
 from engine.sandbox import is_docker, ensure_sandbox, get_project_display
+from memory.embedder import embed_conversation_turn
 from memory.memory import SessionLogger, read_memory
 from memory.rag import MemoryRetriever
 from mods import ModRouter
+
+
+# ── Eviction handler ─────────────────────────────────────────────────────────
+
+# Sources worth persisting when evicted under token pressure.
+# "agent" (raw shell output) and "system" (sandbox state) are excluded —
+# they're ephemeral by nature and not useful long-term.
+_SAVEABLE_SOURCES = {"memory", "skill", "user"}
+
+
+def _on_evict(page: Page) -> None:
+    """
+    Called by ContextWindow just before a page is dropped.
+    Saves the page content to long-term memory if it was important enough.
+    """
+    if page.source not in _SAVEABLE_SOURCES:
+        return
+    if page.relevance_score < EVICTION_SAVE_THRESHOLD:
+        return
+    try:
+        from engine.mod_api import save_fact
+        save_fact(page.content)
+    except Exception as e:
+        print(f"[warn] eviction save failed: {e}", file=sys.stderr)
 
 
 # ── Soul loader ───────────────────────────────────────────────────────────────
@@ -144,6 +171,7 @@ class AgentLoop:
             max_tokens=MAX_CONTEXT_TOKENS,
             relevance_weight=RELEVANCE_WEIGHT,
             recency_weight=RECENCY_WEIGHT,
+            on_evict=_on_evict,
         )
 
         self._evaluator = PromptEvaluator(
@@ -212,6 +240,19 @@ class AgentLoop:
             )
 
         self._logger.log("ASSISTANT", summary or "(no summary)")
+
+        # Embed the full user→summary exchange for future RAG retrieval.
+        # This is the high-level "what happened this turn" record — complements
+        # the per-actor-cycle embeddings written by nodes.py.
+        if user_input and summary:
+            try:
+                embed_conversation_turn(
+                    user=user_input,
+                    assistant=summary,
+                    metadata={"source": "session_turn"},
+                )
+            except Exception as e:
+                print(f"[warn] session turn embedding failed: {e}", file=sys.stderr)
 
     def close(self) -> None:
         used, total = self._ctx.token_usage

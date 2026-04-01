@@ -26,8 +26,11 @@ Intercepted shell syntax:
 
 from __future__ import annotations
 
-import re
+import threading
 import time
+from functools import wraps
+
+from mods._shared import extract_quoted as _extract_quoted
 
 from config import DISPLAY_RESOLUTION, DISPLAY_NUMBER, UI_SETTLE_DELAY
 from engine.mod_api import ModResult, log_action
@@ -44,6 +47,28 @@ _STARTUP_DELAY = 3.0
 # How many times to retry capturing if the screen looks blank.
 _MAX_CAPTURE_RETRIES = 8
 _RETRY_INTERVAL = 2.0
+
+_CACHE_LOCK = threading.Lock()
+_CACHED_FRAME: bytes | None = None
+_LAST_CAPTURE_TIME = 0.0
+_CAPTURE_BUSY = False
+
+
+def _requires_display(func):
+    """Decorator — ensures the virtual display is running before the action."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        err = _ensure_display()
+        if err:
+            return ModResult(text=err)
+        return func(*args, **kwargs)
+    return wrapper
+
+
+def _get_exit_code(output: str) -> int:
+    """Extract exit code from run_command output."""
+    match = re.search(r'\[exit code: (\d+)\]', output)
+    return int(match.group(1)) if match else 0
 
 
 def handle(args: list[str], raw: str) -> ModResult:
@@ -109,7 +134,7 @@ def _ensure_display() -> str | None:
     """
     # In debug_ui.py, after starting Xvfb:
     for _ in range(10):
-        if run_command(f"xdpyinfo -display :{DISPLAY_NUMBER}").exit_code == 0:
+        if _get_exit_code(run_command(f"xdpyinfo -display :{DISPLAY_NUMBER}")) == 0:
             break
         time.sleep(0.5)
         
@@ -136,17 +161,39 @@ def _ensure_display() -> str | None:
 
 
 def _capture() -> bytes | None:
-    # Clear old files so we don't read ghosts
-    run_command(f"rm -f {_SCREENSHOT_PATH} {_SCREENSHOT_PATH}.tmp")
+    """
+    Take a screenshot, but throttle shell commands to max 2 FPS to prevent
+    resource exhaustion (the 'death spiral'). Serve from memory otherwise.
+    """
+    global _CACHED_FRAME, _LAST_CAPTURE_TIME, _CAPTURE_BUSY
     
-    # Write to a .tmp file first. The final file is ONLY created if both commands succeed.
-    run_command(
-        f"DISPLAY={DISPLAY_NUMBER} import -window root png:{_SCREENSHOT_PATH}.tmp && "
-        f"convert {_SCREENSHOT_PATH}.tmp -depth 8 -type TrueColor png:{_SCREENSHOT_PATH}"
-    )
-    
-    # If the command failed, the final file won't exist, and this will safely return None
-    return read_file(_SCREENSHOT_PATH)
+    now = time.time()
+    # If the frame server asks for a frame, but we just took one less than 0.5s ago,
+    # OR if another thread is currently running the capture command, return the RAM cache.
+    if _CAPTURE_BUSY or (now - _LAST_CAPTURE_TIME < 0.5):
+        return _CACHED_FRAME
+        
+    with _CACHE_LOCK:
+        if _CAPTURE_BUSY: 
+            return _CACHED_FRAME
+        _CAPTURE_BUSY = True
+        
+    try:
+        # Atomic file creation using a .tmp file
+        run_command(
+            f"rm -f {_SCREENSHOT_PATH}.tmp && "
+            f"DISPLAY={DISPLAY_NUMBER} import -window root png:{_SCREENSHOT_PATH}.tmp && "
+            f"convert {_SCREENSHOT_PATH}.tmp -depth 8 -type TrueColor png:{_SCREENSHOT_PATH}"
+        )
+        new_frame = read_file(_SCREENSHOT_PATH)
+        
+        if new_frame: # Only update cache if the read was successful
+            _CACHED_FRAME = new_frame
+            _LAST_CAPTURE_TIME = time.time()
+            
+        return _CACHED_FRAME
+    finally:
+        _CAPTURE_BUSY = False
 
 
 def _is_blank(img_bytes: bytes) -> bool:
@@ -239,102 +286,71 @@ def _start(command: str) -> ModResult:
     )
 
 
+@_requires_display
 def _screenshot() -> ModResult:
     """Capture the current screen without any interaction."""
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     status, images = _capture_with_retry()
     log_action("took screenshot", source="debug_ui")
     return ModResult(text=status, images=images)
 
 
+@_requires_display
 def _click(x: str, y: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 1")
     log_action(f"clicked at ({x}, {y})", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"clicked at ({x}, {y}) — {status}", images=images)
 
 
+@_requires_display
 def _double_click(x: str, y: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click --repeat 2 1")
     log_action(f"double-clicked at ({x}, {y})", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"double-clicked at ({x}, {y}) — {status}", images=images)
 
 
+@_requires_display
 def _right_click(x: str, y: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 3")
     log_action(f"right-clicked at ({x}, {y})", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"right-clicked at ({x}, {y}) — {status}", images=images)
 
 
+@_requires_display
 def _type_text(text: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     safe = text.replace("'", "'\\''")
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool type --delay 50 '{safe}'")
     log_action(f"typed: \"{text}\"", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"typed \"{text}\" — {status}", images=images)
 
 
+@_requires_display
 def _press_key(key: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool key {key}")
     log_action(f"pressed key: {key}", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"pressed {key} — {status}", images=images)
 
 
+@_requires_display
 def _scroll(direction: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     button = "4" if direction == "up" else "5"
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool click --repeat 3 {button}")
     log_action(f"scrolled {direction}", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"scrolled {direction} — {status}", images=images)
 
 
+@_requires_display
 def _drag(x1: str, y1: str, x2: str, y2: str) -> ModResult:
-    err = _ensure_display()
-    if err:
-        return ModResult(text=err)
-
     run_command(
         f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x1} {y1} "
         f"mousedown 1 mousemove {x2} {y2} mouseup 1"
     )
     log_action(f"dragged from ({x1},{y1}) to ({x2},{y2})", source="debug_ui")
-
     status, images = _capture_after_action()
     return ModResult(text=f"dragged ({x1},{y1})→({x2},{y2}) — {status}", images=images)
 
@@ -350,24 +366,6 @@ def _close() -> ModResult:
 
     log_action("closed debug_ui session", source="debug_ui")
     return ModResult(text="Display and applications closed.")
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _extract_quoted(args: list[str], raw: str, flag: str) -> str:
-    pattern = rf'{flag}\s+"([^"]+)"'
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    pattern = rf"{flag}\s+'([^']+)'"
-    m = re.search(pattern, raw)
-    if m:
-        return m.group(1)
-
-    if args:
-        return " ".join(args).strip("\"'")
-    return ""
 
 
 def _usage() -> str:

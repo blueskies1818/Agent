@@ -82,6 +82,10 @@ RELEVANCE_WEIGHT = 0.6
 RECENCY_WEIGHT   = 0.4
 RAG_MIN_SCORE = 0.4
 RAG_TOP_K = 5
+# Pages with relevance_score >= this threshold are saved to long-term memory
+# when evicted under token pressure. Sources "agent" and "system" are excluded
+# (raw shell output and sandbox state aren't worth persisting).
+EVICTION_SAVE_THRESHOLD = 0.65
  
 # ── Web search ────────────────────────────────────────────────────────────────
 WEB_SEARCH_SOURCES   = 3

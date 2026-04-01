@@ -7,12 +7,13 @@ venv/
 
 # Environment
 .env
+.passwd
 
 # Logs and memory (optional — you may want to track memory.txt)
 memory/chroma/
 memory/logs/
 memory/memory.txt
-.db
+*.db
 
 # Editor
 .DS_Store

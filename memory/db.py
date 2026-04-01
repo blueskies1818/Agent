@@ -152,6 +152,19 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def get_db() -> sqlite3.Connection | None:
+    """
+    Open the database and return the connection, or None on failure.
+
+    Safe to call from any context — never raises.  Intended for mods and
+    other callers that want to degrade gracefully rather than crash.
+    """
+    try:
+        return init_db()
+    except Exception:
+        return None
+
+
 def get_table_names(conn: sqlite3.Connection) -> list[str]:
     """Return the names of all user-defined tables in the database."""
     rows = conn.execute(

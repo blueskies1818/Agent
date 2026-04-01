@@ -100,6 +100,11 @@ class SessionLogger:
     def log(self, role: str, content: str) -> None:
         self._turn += 1
         ts = datetime.now().strftime("%H:%M:%S")
+        try:
+            from mods.passwd.cache import scrub
+            content = scrub(content)
+        except Exception:
+            pass
         block = (
             f"\n--- Turn {self._turn} | {role} | {ts} ---\n"
             f"{content.strip()}\n"

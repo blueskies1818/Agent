@@ -26,6 +26,7 @@ Usage from any mod:
 from __future__ import annotations
 
 import sqlite3
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -92,13 +93,13 @@ def log_action(description: str, source: str = "mod") -> None:
                 )
                 conn.commit()
                 return
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[warn] log_action db write failed: {e}", file=sys.stderr)
 
     try:
         _append_to_flat_memory(entry)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[warn] log_action flat-file fallback failed: {e}", file=sys.stderr)
 
 
 def log_actions(descriptions: list[str], source: str = "mod") -> None:
@@ -113,17 +114,15 @@ def save_fact(fact: str) -> None:
     """
     Save a durable fact that persists across sessions.
     Written to both the flat memory file and ChromaDB (if available).
+    write_memory() handles its own flat-file fallback internally.
     """
     if not fact or not fact.strip():
         return
     try:
         from memory.memory import write_memory
         write_memory(fact.strip())
-    except Exception:
-        try:
-            _append_to_flat_memory(fact.strip())
-        except Exception:
-            pass
+    except Exception as e:
+        print(f"[warn] save_fact failed: {e}", file=sys.stderr)
 
 
 # ── Preferences ───────────────────────────────────────────────────────────────
@@ -195,11 +194,8 @@ def recall(query: str, top_k: int = 5) -> list[str]:
 # ── Internals ─────────────────────────────────────────────────────────────────
 
 def _get_db() -> sqlite3.Connection | None:
-    try:
-        from memory.db import init_db
-        return init_db()
-    except Exception:
-        return None
+    from memory.db import get_db
+    return get_db()
 
 
 def _get_active_session(conn: sqlite3.Connection) -> str | None:

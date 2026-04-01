@@ -114,7 +114,7 @@ def embed_conversation_turn(user: str, assistant: str, metadata: dict | None = N
     return embed_and_store(text, metadata=meta)
 
 
-
+def remove(doc_id: str) -> None:
     """Remove a specific document by ID."""
     _get_collection().delete(ids=[doc_id])
 

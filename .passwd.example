@@ -1,0 +1,13 @@
+# .passwd — session-scoped credential file
+# Copy to .passwd and fill in your values. This file is gitignored.
+#
+# Format: NAME=value  (NAME will be uppercased automatically)
+# Lines starting with # are ignored. Blank lines are ignored.
+#
+# Use <<NAME>> in any agent command to have the value substituted:
+#   curl -H "Authorization: Bearer <<GITHUB_TOKEN>>" https://api.github.com
+#   debug_ui -type <<GMAIL_PASSWORD>>
+
+GITHUB_TOKEN=
+GMAIL_PASSWORD=
+SSH_PASSPHRASE=

@@ -56,17 +56,18 @@ class _Handler(BaseHTTPRequestHandler):
     def _serve_frame(self):
         img = _capture_fn() if _capture_fn else None
         if not img:
-            self.send_response(503)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"No capture source registered")
+            # ... existing error response ...
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(img)))
         self.send_header("Cache-Control", "no-cache, no-store")
         self.end_headers()
-        self.wfile.write(img)
+        
+        try:
+            self.wfile.write(img)
+        except (BrokenPipeError, ConnectionResetError):
+            pass # Ignore single-frame disconnects
 
     def _serve_mjpeg(self):
         self.send_response(200)
@@ -78,15 +79,19 @@ class _Handler(BaseHTTPRequestHandler):
             while _capture_fn is not None:
                 img = _capture_fn()
                 if img:
-                    self.wfile.write(b"--frame\r\n")
-                    self.wfile.write(b"Content-Type: image/png\r\n")
-                    self.wfile.write(f"Content-Length: {len(img)}\r\n".encode())
-                    self.wfile.write(b"\r\n")
-                    self.wfile.write(img)
-                    self.wfile.write(b"\r\n")
-                    self.wfile.flush()
+                    try:
+                        self.wfile.write(b"--frame\r\n")
+                        self.wfile.write(b"Content-Type: image/png\r\n")
+                        self.wfile.write(f"Content-Length: {len(img)}\r\n".encode())
+                        self.wfile.write(b"\r\n")
+                        self.wfile.write(img)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return # Client closed the browser tab, cleanly exit this stream thread
+
                 time.sleep(0.066)  # ~15 FPS server-side
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except OSError:
             pass
 
     def _serve_status(self):
