@@ -49,7 +49,7 @@ User message
       │                                         │
  ┌────▼──────┐  done or turn limit?             │
  │ reflector │ → yes → END                      │
- └───────────┘ → no  ─────────────────────────── ┘
+ └───────────┘ → no  ───────────────────────────┘
 ```
 
 The agent communicates through structured XML tags:

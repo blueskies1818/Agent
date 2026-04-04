@@ -1,3 +1,7 @@
+---
+description: Create new files and directory structures.
+---
+
 # Write — create new files and directories
 
 Use shell commands to create files and directory structures.

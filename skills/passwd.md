@@ -1,3 +1,7 @@
+---
+description: Session-scoped credential manager for logins, API tokens, and secrets.
+---
+
 # passwd — Session-scoped credential manager
 
 Use this skill when you need to log into services, pass API tokens, or supply

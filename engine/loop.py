@@ -67,6 +67,20 @@ def _load_soul() -> str:
 
 # ── Skill index ───────────────────────────────────────────────────────────────
 
+def _skill_description(text: str) -> str:
+    """Extract description: from YAML frontmatter, or fall back to first heading."""
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            for line in text[3:end].splitlines():
+                if line.startswith("description:"):
+                    return line[len("description:"):].strip()
+    for line in text.splitlines():
+        if line.strip():
+            return line.lstrip("#").strip()
+    return "(no description)"
+
+
 def _skill_index() -> str:
     skills_path = Path(SKILLS_DIR)
     if not skills_path.exists():
@@ -75,11 +89,10 @@ def _skill_index() -> str:
     for md_file in sorted(skills_path.glob("*.md")):
         name = md_file.stem
         try:
-            first_line = md_file.read_text(encoding="utf-8").strip().splitlines()[0]
-            first_line = first_line.lstrip("#").strip()
+            desc = _skill_description(md_file.read_text(encoding="utf-8").strip())
         except Exception:
-            first_line = "(no description)"
-        lines.append(f"  - {name}: {first_line}")
+            desc = "(no description)"
+        lines.append(f"  - {name}: {desc}")
     return "\n".join(lines) if lines else "No skills available."
 
 

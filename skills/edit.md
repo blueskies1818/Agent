@@ -1,3 +1,7 @@
+---
+description: Make precise targeted edits to existing files without rewriting them.
+---
+
 # Edit — modify existing files in place
 
 Use shell commands to make precise edits without rewriting entire files.

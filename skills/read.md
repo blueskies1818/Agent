@@ -1,3 +1,7 @@
+---
+description: Read files and explore directory contents on the filesystem.
+---
+
 # Read — view files and directory contents
 
 Use shell commands to read files and explore the filesystem.

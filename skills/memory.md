@@ -1,3 +1,7 @@
+---
+description: Query, read, and write persistent memory that survives across sessions.
+---
+
 # Memory — query, read, and write persistent memory
 
 Use shell commands to interact with long-term memory that persists across sessions.

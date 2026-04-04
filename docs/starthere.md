@@ -176,7 +176,7 @@ The AI can install packages, run dev servers, and launch GUI applications — al
 
 ### Skills & Mods
 
-Two extensibility layers — see `SKILLS_ECOSYSTEM.md` for full docs.
+Two extensibility layers — see `docs/skills&mods_info.md` for full docs.
 
 **Skills** are `.md` files in `skills/` — documentation the agent loads on demand.
 
@@ -332,27 +332,34 @@ python wipe.py all --yes         # skip confirmation
 
 1. Create `mods/my_tool/my_tool.py` — define `NAME`, `DESCRIPTION`, `handle(args, raw)`
 2. Add any internal helpers alongside it in the same directory
-3. Create `skills/my_tool.md` — document the command syntax
+3. Create `skills/my_tool.md` — add a `description:` frontmatter field (1-liner shown in the runtime index) and document the command syntax
 4. (Optional) Add keywords to `_SKILL_KEYWORDS` in `prompt_evaluator.py`
 
-No imports to update, no registration code. See `SKILLS_ECOSYSTEM.md` for the full guide.
+No imports to update, no registration code. See `docs/skills&mods_info.md` for the full guide.
 
 ---
 
 ## Roadmap
 
-- [x] Drop-in mod system for extensible commands
-- [x] Web search mod
-- [x] Memory query across all stores (SQLite + ChromaDB + flat file)
+- [x] LangGraph planner → actor → reflector loop
 - [x] Docker container sandbox with root access
 - [x] Project directory sync (bind mount)
-- [x] Headless UI debugging (Xvfb + xdotool + screenshots)
+- [x] Persistent memory (SQLite + ChromaDB + flat file)
+- [x] Semantic memory retrieval (RAG) injected before each turn
+- [x] Scored context window with automatic eviction
+- [x] Eviction-triggered memory persistence
+- [x] Per-turn conversation embedding
+- [x] Drop-in mod system
+- [x] Web search mod (DuckDuckGo)
+- [x] Headless GUI mod (Xvfb + xdotool + screenshots)
 - [x] Live frame streaming (viewer + browser)
 - [x] Multimodal pipeline (mods can return images to the LLM)
-- [x] Mod memory API (log_action, save_fact, recall)
-- [ ] Workspace edit history / checkpoints
+- [x] Agent-authored skills (skill_forge mod)
+- [x] Session-scoped credential cache with <<NAME>> interpolation + scrubbing
+- [ ] Scheduled tasks / heartbeat (periodic background agent runs)
+- [ ] Auto-distillation — LLM extracts facts from context at turn end
 - [ ] LangGraph planner upgraded to multi-step goal tracking
-- [ ] Heart beat and scheduled tasks
-- [ ] Reactive input sources (webhook, socket, file watcher)
+- [ ] Workspace edit history / checkpoints
 - [ ] Multi-agent support (agent spawning sub-agents)
+- [ ] Reactive input sources (webhook, file watcher, socket)
 - [ ] Memory summarisation + context minimisation

@@ -38,10 +38,22 @@ do something. They are loaded on demand into the context window when the
 agent requests them.
 
 - **Location:** `skills/`
-- **Format:** Markdown with command examples
+- **Format:** Markdown with YAML frontmatter + command examples
 - **Loaded via:** `<action type="skill"><n>skill_name</n></action>`
 - **Effect:** Injected into context window as a scored page
 - **Auto-discovery:** Drop a `.md` file in `skills/` — it appears automatically
+- **Runtime index:** `engine/loop.py:_skill_index()` scans all skill files at startup
+  and injects a compact 1-liner index into every system prompt
+
+Each skill file should begin with a `description:` frontmatter field:
+
+```markdown
+---
+description: One-line summary shown in the runtime skill index.
+---
+```
+
+This is what the agent sees before deciding which skill to load. Keep it concise.
 
 Skills don't execute anything. They're reference material the agent reads
 before acting.
@@ -157,9 +169,14 @@ from mods.my_tool.helper_lib import some_function
 
 ### Step 3: Create the matching skill
 
-Create `skills/my_tool.md`:
+Create `skills/my_tool.md`. The `description:` frontmatter field is required — it's
+the 1-liner shown in the runtime skill index injected into every system prompt:
 
 ```markdown
+---
+description: One-line summary shown in the runtime skill index.
+---
+
 # My Tool — short description
 
 Use shell commands to interact with My Tool.
@@ -174,6 +191,10 @@ my_tool -ping
 ## When to use
 - When the user asks about X or Y
 ```
+
+The index is built at runtime by `engine/loop.py:_skill_index()`, which scans
+`skills/*.md`, reads the `description:` frontmatter field, and injects a compact
+table into the system prompt. No registration needed — drop the file, restart, it appears.
 
 ### Step 4: Add keyword triggers (optional)
 

@@ -1,3 +1,7 @@
+---
+description: Launch and interact with GUI apps on a headless virtual display (Docker only).
+---
+
 # Debug UI — launch and interact with GUI applications
 
 Use shell commands to run graphical applications on a headless virtual display.

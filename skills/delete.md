@@ -1,3 +1,7 @@
+---
+description: Remove files and directories safely.
+---
+
 # Delete — remove files and directories safely
 
 Use shell commands to remove files and directories.

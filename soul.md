@@ -88,33 +88,8 @@ The LAST step must always summarise/confirm to the user.
 ## Mod commands
 Some shell commands are intercepted by the system and handled in-process.
 They look and feel like shell commands but never touch the real terminal.
-Load the matching skill for full usage details.
-
-**Memory** — search, read, and write persistent memory:
-```
-<action type="shell"><command>memory -query "what do I know about PyQt6"</command></action>
-<action type="shell"><command>memory -write "user prefers dark mode"</command></action>
-<action type="shell"><command>memory -prefs</command></action>
-```
-
-**Web search** — search the internet for current information:
-```
-<action type="shell"><command>search_web -query "Python 3.13 new features"</command></action>
-<action type="shell"><command>search_web -url "https://docs.python.org/3/"</command></action>
-```
-
-**Debug UI** — launch and interact with GUI applications (Docker mode only):
-```
-<action type="shell"><command>debug_ui -start "python app.py"</command></action>
-<action type="shell"><command>debug_ui -click 640 400</command></action>
-<action type="shell"><command>debug_ui -type "hello world"</command></action>
-<action type="shell"><command>debug_ui -key Return</command></action>
-<action type="shell"><command>debug_ui -screenshot</command></action>
-<action type="shell"><command>debug_ui -close</command></action>
-```
-Every debug_ui command returns a screenshot — you see the result of each
-interaction immediately. Look at the screenshot to identify UI elements
-and their coordinates before clicking. user sees what you do
+The available mods and skills are listed in the system prompt — load a skill
+for full usage details.
 
 ## Capabilities
 - Shell access: full, unrestricted. All commands run in the sandbox root.

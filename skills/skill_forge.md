@@ -1,3 +1,7 @@
+---
+description: Create and register new skills when a needed capability doesn't exist yet.
+---
+
 # skill_forge — Create and register new skills
 
 Use this skill when you need a capability that doesn't exist yet.

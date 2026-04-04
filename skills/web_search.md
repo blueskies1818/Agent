@@ -1,3 +1,7 @@
+---
+description: Search the internet or fetch a URL for current information.
+---
+
 # Web Search — search the internet for current information
 
 Use shell commands to search the web, fetch pages, and get relevant text excerpts.
