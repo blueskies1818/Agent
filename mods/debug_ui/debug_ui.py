@@ -26,6 +26,7 @@ Intercepted shell syntax:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from functools import wraps
