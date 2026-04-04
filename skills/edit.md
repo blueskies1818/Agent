@@ -1,5 +1,6 @@
 ---
 description: Make precise targeted edits to existing files without rewriting them.
+keywords: edit, modify, change, update, fix, replace, rename, patch, alter, refactor, rewrite
 ---
 
 # Edit — modify existing files in place

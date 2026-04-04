@@ -1,5 +1,6 @@
 ---
 description: Query, read, and write persistent memory that survives across sessions.
+keywords: remember, recall, memory, forget, do you know, what do you know, have you seen, previous session, last time, earlier, before, preference
 ---
 
 # Memory — query, read, and write persistent memory

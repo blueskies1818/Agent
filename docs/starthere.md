@@ -333,7 +333,7 @@ python wipe.py all --yes         # skip confirmation
 1. Create `mods/my_tool/my_tool.py` — define `NAME`, `DESCRIPTION`, `handle(args, raw)`
 2. Add any internal helpers alongside it in the same directory
 3. Create `skills/my_tool.md` — add a `description:` frontmatter field (1-liner shown in the runtime index) and document the command syntax
-4. (Optional) Add keywords to `_SKILL_KEYWORDS` in `prompt_evaluator.py`
+4. (Optional) Add a `keywords:` field to the frontmatter in the skill file — comma-separated trigger words that hint the skill proactively
 
 No imports to update, no registration code. See `docs/skills&mods_info.md` for the full guide.
 

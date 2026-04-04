@@ -175,6 +175,7 @@ the 1-liner shown in the runtime skill index injected into every system prompt:
 ```markdown
 ---
 description: One-line summary shown in the runtime skill index.
+keywords: my_tool, ping, relevant, trigger, words
 ---
 
 # My Tool — short description
@@ -192,29 +193,19 @@ my_tool -ping
 - When the user asks about X or Y
 ```
 
-The index is built at runtime by `engine/loop.py:_skill_index()`, which scans
-`skills/*.md`, reads the `description:` frontmatter field, and injects a compact
-table into the system prompt. No registration needed — drop the file, restart, it appears.
+Both frontmatter fields are read at runtime:
+- `description:` — shown in the skill index injected into every system prompt
+- `keywords:` — comma-separated trigger words; `core/prompt_evaluator.py` uses these
+  to proactively hint the skill when a user message matches. Falls back to the skill
+  name alone if omitted.
 
-### Step 4: Add keyword triggers (optional)
+No registration needed — drop the file, restart, it appears.
 
-In `core/prompt_evaluator.py`, add an entry to `_SKILL_KEYWORDS`:
-
-```python
-_SKILL_KEYWORDS = {
-    # ... existing entries ...
-    "my_tool": [
-        "my_tool", "related", "keywords", "that", "trigger", "the", "hint",
-    ],
-}
-```
-
-This makes the agent aware the skill exists before it even asks for it.
-
-### Step 5: Done
+### Step 4: Done
 
 No imports to update, no registration code. Restart the agent and the
-ModRouter picks up the new package automatically.
+ModRouter picks up the new package automatically. Keywords are read from
+the skill file's frontmatter — no central registry to edit.
 
 ---
 

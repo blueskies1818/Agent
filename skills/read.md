@@ -1,5 +1,6 @@
 ---
 description: Read files and explore directory contents on the filesystem.
+keywords: read, open, view, cat, show, display, look at, check, inspect, find, list, ls, what's in, contents of
 ---
 
 # Read — view files and directory contents

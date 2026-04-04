@@ -1,5 +1,6 @@
 ---
 description: Launch and interact with GUI apps on a headless virtual display (Docker only).
+keywords: ui, gui, window, screen, display, interface, button, click, debug ui, debug_ui, launch app, open app, graphical, visual, screenshot, headless, xvfb, interact with
 ---
 
 # Debug UI — launch and interact with GUI applications

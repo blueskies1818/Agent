@@ -1,5 +1,6 @@
 ---
 description: Remove files and directories safely.
+keywords: delete, remove, clean, wipe, erase, rm, destroy, drop, clear, unlink
 ---
 
 # Delete — remove files and directories safely

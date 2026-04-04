@@ -71,8 +71,8 @@ class PromptEvaluator:
             except Exception:
                 continue
 
-            # Prefer frontmatter keywords; fall back to hardcoded registry then skill name
-            keywords = _parse_frontmatter_keywords(content) or _SKILL_KEYWORDS.get(name, [name])
+            # Load keywords from frontmatter; fall back to skill name only
+            keywords = _parse_frontmatter_keywords(content) or [name]
 
             if not any(kw in text_lower for kw in keywords):
                 continue
@@ -118,43 +118,3 @@ def _parse_frontmatter_keywords(content: str) -> list[str]:
             value = line.split(":", 1)[1].strip()
             return [kw.strip().lower() for kw in value.split(",") if kw.strip()]
     return []
-
-
-# ── Skill keyword registry ─────────────────────────────────────────────────────
-
-_SKILL_KEYWORDS: dict[str, list[str]] = {
-    "read": [
-        "read", "open", "view", "cat", "show", "display",
-        "look at", "check", "inspect", "find", "list", "ls",
-        "what's in", "contents of",
-    ],
-    "write": [
-        "write", "create", "make", "new file", "generate",
-        "save", "output", "produce", "touch", "scaffold",
-    ],
-    "edit": [
-        "edit", "modify", "change", "update", "fix", "replace",
-        "rename", "patch", "alter", "refactor", "rewrite",
-    ],
-    "delete": [
-        "delete", "remove", "clean", "wipe", "erase",
-        "rm", "destroy", "drop", "clear", "unlink",
-    ],
-    "memory": [
-        "remember", "recall", "memory", "forget", "do you know",
-        "what do you know", "have you seen", "previous session",
-        "last time", "earlier", "before", "preference",
-    ],
-    "web_search": [
-        "search", "google", "look up", "look online", "find online",
-        "web search", "search the web", "search for", "what is",
-        "what's", "latest", "current", "recent news", "how to",
-        "documentation for", "docs for",
-    ],
-    "debug_ui": [
-        "ui", "gui", "window", "screen", "display", "interface",
-        "button", "click", "debug ui", "debug_ui", "launch app",
-        "open app", "graphical", "visual", "screenshot",
-        "headless", "xvfb", "interact with",
-    ],
-}

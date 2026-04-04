@@ -1,5 +1,6 @@
 ---
 description: Create new files and directory structures.
+keywords: write, create, make, new file, generate, save, output, produce, touch, scaffold
 ---
 
 # Write — create new files and directories

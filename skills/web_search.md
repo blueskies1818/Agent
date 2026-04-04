@@ -1,5 +1,6 @@
 ---
 description: Search the internet or fetch a URL for current information.
+keywords: search, google, look up, look online, find online, web search, search the web, search for, what is, latest, current, recent news, how to, documentation for, docs for
 ---
 
 # Web Search — search the internet for current information
