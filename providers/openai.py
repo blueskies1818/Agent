@@ -11,12 +11,12 @@ from collections.abc import Iterator
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from agents.base import BaseAgent
+from providers.base import BaseAgent
 from config import PROVIDERS
 
 load_dotenv()
 
-_MODELS = PROVIDERS["openai"]["models"]
+_MODEL = PROVIDERS["openai"]["model"]
 
 
 class OpenAIAgent(BaseAgent):
@@ -27,17 +27,17 @@ class OpenAIAgent(BaseAgent):
             raise EnvironmentError("OPENAI_API_KEY is not set.")
         self._client = OpenAI(api_key=api_key)
 
-    def _raw_call(self, messages: list[dict], system: str, tier: str) -> str:
+    def _raw_call(self, messages: list[dict], system: str) -> str:
         response = self._client.chat.completions.create(
-            model=_MODELS[tier],
+            model=_MODEL,
             messages=[{"role": "system", "content": system}] + messages,
             max_completion_tokens=4096,
         )
         return response.choices[0].message.content
 
-    def _raw_stream(self, messages: list[dict], system: str, tier: str) -> Iterator[str]:
+    def _raw_stream(self, messages: list[dict], system: str) -> Iterator[str]:
         stream = self._client.chat.completions.create(
-            model=_MODELS[tier],
+            model=_MODEL,
             messages=[{"role": "system", "content": system}] + messages,
             max_completion_tokens=4096,
             stream=True,

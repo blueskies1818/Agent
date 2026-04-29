@@ -1,217 +1,282 @@
 """
-Session lifecycle — start, end, load, list.
+memory/sessions.py — Session lifecycle management.
 
-A session is one continuous chat instance.  Opening one creates a UUID row
-in `sessions`; closing one writes a Tier 2 summary that also becomes a
-`compression` conversation entry so it carries forward automatically.
+All session data is stored as JSON. A text-only abstraction is used for RAG
+so that system-injected content (soul files, core_refs, mod indices) never
+enters the sessions ChromaDB bucket — only conversation turns do.
 
-Usage:
-    from memory.sessions import start_session, end_session, load_session, list_sessions
+Storage layout
+──────────────
+  workspace/sessions/conversations/<cid>.json      Glass AI conversation
+  workspace/sessions/<session_id>.json             Glass Harness agent session
 
-    sid = start_session(conn)
-    ...
-    end_session(conn, sid, agent_call)
-    rows = load_session(conn, sid)
-    all_sessions = list_sessions(conn)
+ChromaDB doc IDs (in the "sessions" bucket, text-only, no .md files):
+  conv<safe_cid>           Glass AI conversation
+  sess<safe_session_id>    Glass Harness agent session
+
+Re-indexing is always an upsert — the same cid always maps to the same doc ID.
+Deleting removes both the JSON file and the ChromaDB entry.
 """
 
-import sqlite3
-import uuid
+from __future__ import annotations
+
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import BASE_DIR
+# ── Paths ──────────────────────────────────────────────────────────────────────
+
+_BASE_DIR  = Path(__file__).parent.parent
+_SESS_DIR  = _BASE_DIR / "workspace" / "sessions"
+_CONV_DIR  = _SESS_DIR / "conversations"
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+def _safe_id(raw: str) -> str:
+    """Strip chars invalid for ChromaDB doc IDs and cap at 60 chars."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "", raw)[:60]
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+
+# ── Text abstraction (conversation turns only — no system content) ─────────────
+
+def _conv_to_text(data: dict) -> str:
+    """Extract only user/assistant turns as plain text for RAG indexing."""
+    lines = []
+    for msg in data.get("messages", []):
+        role    = (msg.get("role") or "").capitalize()
+        content = (msg.get("content") or "").strip()
+        if role and content and role.lower() in ("user", "assistant"):
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
 
 
-def _load_session_agent_prompt() -> str:
-    """Load sessionAgent.md from disk (fresh on every call)."""
-    path = BASE_DIR / "data" / "agent_files" / "sessionAgent.md"
+
+
+# ── RAG helpers ────────────────────────────────────────────────────────────────
+
+def _index(doc_id: str, text: str) -> None:
+    """Upsert text into the sessions ChromaDB bucket (no file written)."""
+    text = text.strip()
+    if not text:
+        return
+    try:
+        from memory.vault import create_bucket, index_text
+        create_bucket("sessions")
+        index_text("sessions", doc_id, text)
+    except Exception as e:
+        from core.log import log
+        log.error(f"sessions._index failed for {doc_id}: {e}", source="sessions")
+
+
+def _deindex(doc_id: str) -> None:
+    """Remove a ChromaDB entry from the sessions bucket."""
+    try:
+        from memory.vault import delete_index
+        delete_index("sessions", doc_id)
+    except Exception as e:
+        from core.log import log
+        log.error(f"sessions._deindex failed for {doc_id}: {e}", source="sessions")
+
+
+# ── Glass AI conversations ─────────────────────────────────────────────────────
+
+def write_conversation(cid: str, data: dict) -> None:
+    """
+    Persist a Glass AI conversation as JSON and upsert it in ChromaDB.
+
+    Always overwrites the existing file — calling this on every new message
+    extends the conversation record without creating duplicates.
+    """
+    _CONV_DIR.mkdir(parents=True, exist_ok=True)
+    (_CONV_DIR / f"{cid}.json").write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    _index(f"conv{_safe_id(cid)}", _conv_to_text(data))
+
+
+def load_conversation(cid: str) -> dict | None:
+    """Read a Glass AI conversation JSON. Returns None if not found."""
+    path = _CONV_DIR / f"{cid}.json"
     if not path.exists():
-        return (
-            "You are a session-close summarizer. "
-            "Read the task and trivial summaries provided and write a single "
-            "paragraph summarizing the session. Respond ONLY in JSON: "
-            '{"summary": "your paragraph here"}'
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def delete_conversation(cid: str) -> None:
+    """
+    Delete a Glass AI conversation and everything linked to it:
+      - conversation JSON file + ChromaDB entry
+      - queue_tasks rows in SQLite whose session == cid
+      - plan files (.md) whose session == cid, plus their index entries
+    """
+    # Remove conversation file + RAG entry
+    path = _CONV_DIR / f"{cid}.json"
+    if path.exists():
+        path.unlink()
+    _deindex(f"conv{_safe_id(cid)}")
+
+    # Remove queue_tasks rows from SQLite
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute("DELETE FROM queue_tasks WHERE session = ?", (cid,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        from core.log import log
+        log.error(f"delete_conversation SQLite cleanup failed: {e}", source="sessions")
+
+    # Remove plan files that belong to this conversation
+    _delete_plans_for_session(cid)
+
+
+def _delete_plans_for_session(cid: str) -> None:
+    """Delete plan .md files and index entries whose session field matches cid."""
+    _PLANS_INDEX = _BASE_DIR / "workspace" / ".agent" / "plans" / "index.json"
+    if not _PLANS_INDEX.exists():
+        return
+    try:
+        index = json.loads(_PLANS_INDEX.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    to_delete = [
+        entry for entry in index.values()
+        if entry.get("session") == cid
+    ]
+    if not to_delete:
+        return
+
+    for entry in to_delete:
+        # Delete the plan .md file
+        plan_path = Path(entry.get("plan_path", ""))
+        if plan_path.exists():
+            try:
+                plan_path.unlink()
+            except Exception:
+                pass
+        # Remove from index
+        index.pop(entry["task_id"], None)
+
+    # Rewrite the trimmed index
+    try:
+        _PLANS_INDEX.write_text(
+            json.dumps(index, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    return path.read_text(encoding="utf-8")
+    except Exception:
+        pass
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
-
-def start_session(conn: sqlite3.Connection) -> str:
-    """
-    Open a new session.
-
-    Inserts a row into `sessions` with a fresh UUID and the current
-    timestamp.  Returns the session_id for use in all subsequent DB writes.
-    """
-    session_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
-        (session_id, _now()),
-    )
-    conn.commit()
-    return session_id
-
-
-def end_session(
-    conn: sqlite3.Connection,
-    session_id: str,
-    agent_call=None,
-) -> str:
-    """
-    Close a session and write a Tier 2 summary.
-
-    Steps:
-      1. Set `ended_at` on the session row.
-      2. Gather all `task_summary` and `trivial_summary` conversation entries
-         for this session.
-      3. Call the Tier 2 agent with `sessionAgent.md` to produce a summary.
-      4. Write the summary to `sessions.summary`.
-      5. Write the same summary as a `compression` conversation entry so it
-         carries forward into the next session's context.
-
-    Args:
-        conn:        Live DB connection.
-        session_id:  The session to close.
-        agent_call:  Callable with signature (messages, system, tier) -> dict.
-                     If None, a simple concatenation fallback is used.
-
-    Returns:
-        The summary string that was written.
-    """
-    # 1. Mark session ended
-    conn.execute(
-        "UPDATE sessions SET ended_at = ? WHERE id = ?",
-        (_now(), session_id),
-    )
-    conn.commit()
-
-    # 2. Gather summaries for this session
-    rows = conn.execute(
-        """SELECT entry_type, content, date FROM conversation
-           WHERE session_id = ?
-             AND entry_type IN ('task_summary', 'trivial_summary')
-           ORDER BY created_at""",
-        (session_id,),
-    ).fetchall()
-
-    if not rows:
-        summary = "Empty session — no tasks completed."
-    elif agent_call is not None:
-        # 3. Call Tier 2 agent with sessionAgent.md
-        entries_text = "\n".join(
-            f"[{r['entry_type']}] {r['content']}" for r in rows
-        )
-        system = _load_session_agent_prompt()
-        messages = [
-            {
-                "role": "user",
-                "content": (
-                    f"Summarize this session ({len(rows)} entries):\n\n"
-                    f"{entries_text}"
-                ),
-            }
-        ]
+def list_conversations() -> list[dict]:
+    """List all Glass AI conversations, newest first (lightweight summaries)."""
+    if not _CONV_DIR.exists():
+        return []
+    results = []
+    for p in sorted(_CONV_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
         try:
-            result = agent_call(messages, system, 2)
-            summary = result.get("summary", str(result))
-        except Exception as exc:
-            # Fallback if agent call fails — never lose the session close
-            summary = _fallback_summary(rows)
-    else:
-        summary = _fallback_summary(rows)
-
-    # 4. Write summary to sessions table
-    conn.execute(
-        "UPDATE sessions SET summary = ? WHERE id = ?",
-        (summary, session_id),
-    )
-
-    # 5. Write as compression entry in conversation
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    conn.execute(
-        """INSERT INTO conversation (session_id, entry_type, content, date)
-           VALUES (?, 'compression', ?, ?)""",
-        (session_id, summary, today),
-    )
-    conn.commit()
-
-    return summary
+            data = json.loads(p.read_text(encoding="utf-8"))
+            results.append({
+                "cid":           p.stem,
+                "title":         data.get("title", p.stem)[:120],
+                "ts":            data.get("ts"),
+                "message_count": len(data.get("messages", [])),
+                "updated_at":    datetime.fromtimestamp(
+                    p.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
+            })
+        except Exception:
+            pass
+    return results
 
 
-def load_session(conn: sqlite3.Connection, session_id: str) -> list[dict]:
-    """
-    Reopen a past session.
+# ── Glass Harness internal session API ────────────────────────────────────────
 
-    Clears `ended_at` on the session row (making it active again) and
-    returns all conversation entries for the session in chronological order.
-    """
-    # Verify session exists
-    row = conn.execute(
-        "SELECT id FROM sessions WHERE id = ?", (session_id,)
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"Session {session_id!r} not found.")
-
-    # Clear ended_at — session is now active again
-    conn.execute(
-        "UPDATE sessions SET ended_at = NULL WHERE id = ?",
-        (session_id,),
-    )
-    conn.commit()
-
-    # Return all conversation entries for this session
-    rows = conn.execute(
-        """SELECT id, session_id, entry_type, role, content, task_id, date,
-                  summarized, created_at
-           FROM conversation
-           WHERE session_id = ?
-           ORDER BY created_at""",
-        (session_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+def open_session(session_id: str) -> None:
+    """Register a new session in the sessions SQLite table."""
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, started_at) VALUES (?, ?)",
+            (session_id, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        from core.log import log
+        log.error(f"open_session failed: {e}", source="sessions")
 
 
-def list_sessions(conn: sqlite3.Connection) -> list[dict]:
-    """
-    Return all sessions with id, started_at, ended_at, and the first
-    100 characters of summary (for preview display).
-    """
-    rows = conn.execute(
-        """SELECT id, started_at, ended_at,
-                  SUBSTR(summary, 1, 100) AS summary_preview
-           FROM sessions
-           ORDER BY started_at DESC"""
-    ).fetchall()
-    return [dict(r) for r in rows]
+def log_turn(session_id: str, role: str, content: str) -> None:
+    """Append a conversation turn to the conversation SQLite table."""
+    if not content or not content.strip():
+        return
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute(
+            """INSERT INTO conversation
+               (session_id, entry_type, role, content, created_at)
+               VALUES (?, 'turn', ?, ?, ?)""",
+            (session_id, role.lower(), content.strip(),
+             datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        from core.log import log
+        log.error(f"log_turn failed: {e}", source="sessions")
 
 
-def get_session(conn: sqlite3.Connection, session_id: str) -> dict | None:
-    """Return full session row, or None if not found."""
-    row = conn.execute(
-        "SELECT * FROM sessions WHERE id = ?", (session_id,)
-    ).fetchone()
-    return dict(row) if row else None
+def close_session(session_id: str, summary: str = "") -> None:
+    """Mark the session as ended in SQLite. Turn data is already in the DB."""
+    ended_at = datetime.now(timezone.utc).isoformat()
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute(
+            "UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?",
+            (ended_at, summary.strip()[:500], session_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        from core.log import log
+        log.error(f"close_session failed: {e}", source="sessions")
 
 
-# ── Fallback ───────────────────────────────────────────────────────────────────
+def list_sessions(limit: int = 20) -> list[dict]:
+    """Return recent sessions as a list of dicts, newest first."""
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        rows = conn.execute(
+            """SELECT id, started_at, ended_at, summary FROM sessions
+               WHERE ended_at IS NOT NULL
+               ORDER BY started_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
-def _fallback_summary(rows) -> str:
-    """
-    Produce a basic summary without calling the agent.
-    Used when no agent_call is provided or if the call fails.
-    """
-    parts = []
-    for r in rows:
-        parts.append(r["content"] if isinstance(r, dict) else r["content"])
-    joined = " | ".join(parts)
-    if len(joined) > 500:
-        joined = joined[:497] + "..."
-    return f"Session summary: {joined}"
+
+def load_session_turns(session_id: str) -> list[dict]:
+    """Return all conversation turns for a session, oldest first."""
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        rows = conn.execute(
+            """SELECT role, content, created_at FROM conversation
+               WHERE session_id = ? AND entry_type = 'turn'
+               ORDER BY created_at ASC""",
+            (session_id,),
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []

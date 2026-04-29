@@ -17,10 +17,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-NAME        = "passwd"
-DESCRIPTION = "Session-scoped credential cache — use <<NAME>> in commands"
-
-
 def handle(args: list[str], raw: str) -> str:
     if not args:
         return _usage()

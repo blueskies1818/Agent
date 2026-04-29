@@ -12,3 +12,19 @@ duckduckgo-search>=6.0.0
 ddgs>=5.0.0
 
 Pillow>=10.0.0
+
+# HTTP server (Phase 6)
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+
+# MCP (Model Context Protocol)
+fastmcp>=3.0
+mcp>=1.2.0
+
+# Embeddings — local, no API key needed
+# Model must be pulled once: ollama pull nomic-embed-text
+ollama>=0.3.0
+
+# Terminal UI and HTTP client
+rich>=13.7.0
+httpx>=0.26.0

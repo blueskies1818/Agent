@@ -3,14 +3,14 @@ engine/mod_api.py — Shared API surface for all mods.
 
 Two concerns live here:
 
-  1. ModResult    — return type that carries text + optional images.
-                    Any mod can return images, not just debug_ui.
+  1. ModResult    — return type that carries text + optional media attachments.
+                    Any mod can return attachments, not just debug_ui.
   2. Memory API   — log_action, save_fact, save_pref, recall.
                     Lets mods write to memory without importing internals.
 
 Usage from any mod:
 
-    from engine.mod_api import ModResult, log_action, save_fact
+    from engine.mod_api import ModResult, MediaAttachment, log_action, save_fact
 
     def handle(args, raw):
         # Return text only (backward compatible — plain str also works)
@@ -18,17 +18,19 @@ Usage from any mod:
 
         # Return text + image (any mod can do this)
         return ModResult(
-            text="clicked at (340, 220)",
-            images=[screenshot_bytes],
+            text="screenshot captured",
+            attachments=[MediaAttachment(type="image", path="/tmp/shot.png")],
         )
 """
 
 from __future__ import annotations
 
 import sqlite3
-import sys
+import sys  # for stderr warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from engine.media import MediaAttachment
 
 
 # ── ModResult ─────────────────────────────────────────────────────────────────
@@ -40,21 +42,22 @@ class ModResult:
 
     Any mod handler can return either:
       - A plain str (backward compatible, text only)
-      - A ModResult (text + optional image attachments)
+      - A ModResult (text + optional media attachments)
 
-    The ModRouter normalizes both to ModResult before passing upstream.
-    The actor node checks for images and builds multimodal LLM messages
-    when they're present.
+    The MCPRouter normalizes both to ModResult before passing upstream.
+    The actor node passes attachments through the media pipeline to build
+    provider-specific multimodal LLM messages.
 
     Attributes:
-        text:   The text output shown to the AI (and in the terminal).
-        images: Optional list of PNG image bytes.  Each image is included
-                in the LLM message as a vision content block.  Images are
-                NOT stored in memory — they're seen once and evicted.
-                Use log_action() to persist a text description instead.
+        text:        The text output shown to the AI (and in the terminal).
+        attachments: Optional list of MediaAttachment objects.  Each attachment
+                     is processed by engine/media.py before reaching the LLM.
+                     Attachments are NOT stored in message history across turns
+                     ("see once, discard").
+                     Use log_action() to persist a text description instead.
     """
     text: str
-    images: list[bytes] = field(default_factory=list)
+    attachments: list[MediaAttachment] = field(default_factory=list)
 
 
 # ── Action logging ────────────────────────────────────────────────────────────
@@ -67,8 +70,7 @@ def log_action(description: str, source: str = "mod") -> None:
     persisting expensive data (screenshots, large outputs), mods call
     this to record what happened in plain text.
 
-    Written to the conversation table as a 'mod_action' entry,
-    with a fallback to the flat memory file.
+    Written to the conversation table as a 'mod_action' entry.
 
     Args:
         description:  What happened, in a few words.
@@ -92,14 +94,8 @@ def log_action(description: str, source: str = "mod") -> None:
                     (session_id, entry, _today()),
                 )
                 conn.commit()
-                return
     except Exception as e:
         print(f"[warn] log_action db write failed: {e}", file=sys.stderr)
-
-    try:
-        _append_to_flat_memory(entry)
-    except Exception as e:
-        print(f"[warn] log_action flat-file fallback failed: {e}", file=sys.stderr)
 
 
 def log_actions(descriptions: list[str], source: str = "mod") -> None:
@@ -113,8 +109,7 @@ def log_actions(descriptions: list[str], source: str = "mod") -> None:
 def save_fact(fact: str) -> None:
     """
     Save a durable fact that persists across sessions.
-    Written to both the flat memory file and ChromaDB (if available).
-    write_memory() handles its own flat-file fallback internally.
+    Written to SQLite (long_term table) and ChromaDB.
     """
     if not fact or not fact.strip():
         return
@@ -213,12 +208,3 @@ def _get_active_session(conn: sqlite3.Connection) -> str | None:
 
 def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
-def _append_to_flat_memory(text: str) -> None:
-    from config import MEMORY_FILE
-    from pathlib import Path
-    path = Path(MEMORY_FILE)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(text + "\n")

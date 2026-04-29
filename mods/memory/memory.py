@@ -10,13 +10,15 @@ Intercepted shell syntax:
     memory -blobs
     memory -blobs tags=memory,sqlite
     memory -blob build_config
+    memory -vault skills "how do I create a skill"
+    memory -vault * "async patterns"
 
 The mod searches across all memory stores:
   - conversation history (task_summary, plan_record, compression entries)
   - blob_index (completed task metadata)
   - long_term preferences (key-value pairs)
-  - flat memory.txt file (legacy)
-  - ChromaDB / RAG retriever (if available)
+  - ChromaDB / RAG retriever (semantic embeddings)
+  - vault bucket collections (semantic search over knowledge docs)
 """
 
 from __future__ import annotations
@@ -24,9 +26,6 @@ from __future__ import annotations
 import sqlite3
 
 from mods._shared import extract_quoted as _extract_quoted
-
-NAME        = "memory"
-DESCRIPTION = "Query, read, or write persistent memory across sessions"
 
 
 def handle(args: list[str], raw: str) -> str:
@@ -41,6 +40,17 @@ def handle(args: list[str], raw: str) -> str:
         if not query:
             return "[ERROR] memory -query requires a search string.\n" + _usage()
         return _query(query)
+
+    elif flag == "vault":
+        if len(args) < 3:
+            return "[ERROR] memory -vault requires <bucket|*> and a search string.\n" + _usage()
+        bucket = args[1]
+        query  = _extract_quoted(args[2:], raw, f"-vault {bucket}")
+        if not query:
+            query = " ".join(args[2:]).strip("\"'")
+        if not query:
+            return "[ERROR] memory -vault requires a search string.\n" + _usage()
+        return _query_vault(bucket, query)
 
     elif flag == "read":
         return _read_flat()
@@ -65,6 +75,13 @@ def handle(args: list[str], raw: str) -> str:
 
     elif flag == "blob" and len(args) >= 2:
         return _read_blob(args[1])
+
+    elif flag == "sessions":
+        limit = int(args[1]) if len(args) >= 2 and args[1].isdigit() else 20
+        return _list_sessions(limit)
+
+    elif flag == "session" and len(args) >= 2:
+        return _load_session(args[1])
 
     else:
         return f"[ERROR] Unknown memory operation: '{flag}'\n" + _usage()
@@ -98,7 +115,7 @@ def _query(query: str) -> str:
       2. Blob index (keyword search in name + summary)
       3. Conversation history (keyword search in summaries + compressions)
       4. ChromaDB / RAG retriever (semantic, if available)
-      5. Flat memory.txt (keyword search, legacy fallback)
+      5. Vault bucket collections (semantic search across all buckets)
     """
     results: list[str] = []
 
@@ -159,31 +176,25 @@ def _query(query: str) -> str:
     # 4. ChromaDB / RAG retriever (semantic search)
     try:
         from memory.rag import MemoryRetriever
-        from config import RAG_MIN_SCORE, RAG_TOP_K
+        from config import RAG_MIN_SCORE, RAG_CANDIDATE_K
         retriever = MemoryRetriever(min_score=RAG_MIN_SCORE)
-        rag_hits = retriever.retrieve(query, top_k=RAG_TOP_K)
+        rag_hits = retriever.retrieve(query, top_k=RAG_CANDIDATE_K)
         if rag_hits:
             lines = [f"  [similarity {score:.2f}] {text}" for text, score in rag_hits]
             results.append("── Semantic memory (RAG) ──\n" + "\n".join(lines))
     except Exception:
         pass
 
-    # 5. Flat memory.txt fallback
+    # 5. Vault bucket collections
     try:
-        from config import MEMORY_FILE
-        from pathlib import Path
-        mem_path = Path(MEMORY_FILE)
-        if mem_path.exists():
-            content = mem_path.read_text(encoding="utf-8").strip()
-            if content:
-                query_lower = query.lower()
-                matched_lines = [
-                    f"  {line.strip()}"
-                    for line in content.splitlines()
-                    if line.strip() and query_lower in line.lower()
-                ]
-                if matched_lines:
-                    results.append("── memory.txt ──\n" + "\n".join(matched_lines[:10]))
+        from memory.vault import query_all
+        vault_hits = query_all(query, top_k=3)
+        if vault_hits:
+            lines = [
+                f"  [{score:.2f}] {b}/{c} — {_truncate(body)}"
+                for b, c, body, score in vault_hits
+            ]
+            results.append("── Vault knowledge ──\n" + "\n".join(lines))
     except Exception:
         pass
 
@@ -193,37 +204,59 @@ def _query(query: str) -> str:
     return f"Memory results for '{query}':\n\n" + "\n\n".join(results)
 
 
-def _read_flat() -> str:
-    """Read the full flat memory file."""
+def _query_vault(bucket: str, query: str) -> str:
+    """Semantic search within a specific vault bucket, or all buckets if bucket is '*'."""
     try:
-        from config import MEMORY_FILE
-        from pathlib import Path
-        path = Path(MEMORY_FILE)
-        if path.exists():
-            content = path.read_text(encoding="utf-8").strip()
-            return content if content else "(memory.txt is empty)"
-        return "(memory.txt does not exist)"
+        if bucket == "*":
+            from memory.vault import query_all
+            hits = query_all(query)
+            if not hits:
+                return f"(no vault content matching '{query}')"
+            lines = [
+                f"  [{score:.2f}] {b}/{c}\n    {_truncate(body)}"
+                for b, c, body, score in hits
+            ]
+            return f"Vault search (all buckets) for '{query}':\n\n" + "\n\n".join(lines)
+        else:
+            from memory.vault import query_bucket
+            hits = query_bucket(bucket, query)
+            if not hits:
+                return f"(no content in bucket '{bucket}' matching '{query}')"
+            lines = [
+                f"  [{score:.2f}] {c}\n    {_truncate(body)}"
+                for c, body, score in hits
+            ]
+            return f"Vault '{bucket}' results for '{query}':\n\n" + "\n\n".join(lines)
+    except Exception as e:
+        return f"[ERROR] {e}"
+
+
+def _read_flat() -> str:
+    """Read recent long-term memory entries from SQLite."""
+    conn = _get_db()
+    if not conn:
+        return "(database unavailable — no memory stored)"
+    try:
+        rows = conn.execute(
+            """SELECT content, created_at FROM long_term
+               ORDER BY created_at DESC LIMIT 50"""
+        ).fetchall()
+        if not rows:
+            return "(no long-term memories stored)"
+        lines = [f"  [{r['created_at'][:10]}] {r['content']}" for r in rows]
+        return "Long-term memory:\n" + "\n".join(lines)
     except Exception as e:
         return f"[ERROR] Could not read memory: {e}"
 
 
 def _write_flat(content: str) -> str:
-    """Write a fact to both flat file and ChromaDB."""
+    """Write a fact to SQLite and ChromaDB."""
     try:
         from memory.memory import write_memory
         write_memory(content)
         return f"Memory written: {content}"
-    except Exception:
-        try:
-            from config import MEMORY_FILE
-            from pathlib import Path
-            path = Path(MEMORY_FILE)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(content + "\n")
-            return f"Memory written (flat file only): {content}"
-        except Exception as e:
-            return f"[ERROR] Could not write memory: {e}"
+    except Exception as e:
+        return f"[ERROR] Could not write memory: {e}"
 
 
 def _list_prefs() -> str:
@@ -288,15 +321,74 @@ def _read_blob(name: str) -> str:
         return f"[ERROR] {e}"
 
 
+def _list_sessions(limit: int = 20) -> str:
+    """List recent sessions from SQLite."""
+    try:
+        from memory.sessions import list_sessions
+        sessions = list_sessions(limit)
+        if not sessions:
+            return "(no past sessions recorded)"
+        lines = []
+        for s in sessions:
+            sid     = s.get("id", "?")
+            started = (s.get("started_at") or "")[:16].replace("T", " ")
+            ended   = (s.get("ended_at")   or "")[:16].replace("T", " ")
+            summary = s.get("summary") or ""
+            if summary:
+                summary = "  — " + summary[:100]
+            lines.append(f"  {sid}  ({started} → {ended}){summary}")
+        return f"Past sessions ({len(sessions)}):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"[ERROR] {e}"
+
+
+def _load_session(session_id: str) -> str:
+    """Load a session's vault entry, falling back to raw turns if not in vault."""
+    # Try vault first (has full Markdown)
+    try:
+        from pathlib import Path
+        from config import VAULT_DIR
+        md_path = Path(VAULT_DIR) / "sessions" / f"{session_id}.md"
+        if md_path.exists():
+            return md_path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+
+    # Fallback: reconstruct from SQLite turns
+    try:
+        from memory.sessions import load_session_turns
+        turns = load_session_turns(session_id)
+        if not turns:
+            return f"(no session found with id '{session_id}')"
+        lines = [f"# Session {session_id}", ""]
+        for t in turns:
+            role    = (t.get("role") or "?").capitalize()
+            content = (t.get("content") or "").strip()
+            lines.append(f"**{role}**: {content}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[ERROR] {e}"
+
+
+def _truncate(text: str, limit: int = 120) -> str:
+    return (text.replace("\n", " ").strip()[:limit] + "...") if len(text) > limit else text.replace("\n", " ").strip()
+
+
 # ── Usage ─────────────────────────────────────────────────────────────────────
 
 def _usage() -> str:
     return """Usage:
-  memory -query "search terms"       Search all memory stores
-  memory -read                       Read flat memory file
-  memory -write "fact to remember"   Persist a fact
-  memory -prefs                      List long-term preferences
-  memory -pref key value             Set a preference
-  memory -blobs                      List recent task blobs
-  memory -blobs tags=memory,sqlite   Filter blobs by tag
-  memory -blob blob_name             Load full blob content"""
+  memory -query "search terms"              Search all memory stores + vault
+  memory -vault <bucket> "search terms"     Semantic search within a vault bucket
+  memory -vault * "search terms"            Semantic search across ALL vault buckets
+  memory -read                              Read long-term memory entries
+  memory -write "fact to remember"          Persist a fact
+  memory -prefs                             List long-term preferences
+  memory -pref key value                    Set a preference
+  memory -blobs                             List recent task blobs
+  memory -blobs tags=memory,sqlite          Filter blobs by tag
+  memory -blob blob_name                    Load full blob content
+  memory -sessions                          List past sessions (newest first)
+  memory -sessions 5                        List last 5 sessions
+  memory -session <session_id>              Load full conversation for a session"""

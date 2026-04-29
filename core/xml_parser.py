@@ -27,7 +27,18 @@ Action tags (executable)
 ────────────────────────
 <action type="shell"><command>ls -la</command></action>
 <action type="skill"><n>write</n></action>
+<action type="skill"><op>search</op><query>compress video</query></action>
+<action type="skill"><op>request_creation</op><name>ffmpeg</name><reason>...</reason></action>
 <action type="memory"><op>write</op><content>fact</content></action>
+<action type="plan"><op>write</op><title>Task title</title><steps>1. step one\n2. step two</steps></action>
+<action type="plan"><op>step_done</op><step>2</step></action>
+<action type="plan"><op>note</op><content>discovery</content></action>
+<action type="plan"><op>read</op></action>
+<action type="plan"><op>status</op><value>paused</value></action>
+<action type="plan"><op>list</op></action>
+<action type="plan"><op>resume</op><task_id>2026-04-07_refactor-auth</task_id></action>
+<action type="escalate"><level>planner</level><reason>...</reason><need>clarification</need></action>
+<action type="escalate"><level>user</level><reason>...</reason></action>
 <action type="done"/>
 """
 
@@ -125,6 +136,35 @@ def _parse_plan_steps(text: str) -> list[str]:
     return steps
 
 
+def _parse_action(raw: str) -> Action | None:
+    """
+    Parse a single <action ...> tag into an Action object.
+
+    Handles all action types including the V2 additions:
+      plan, escalate, and extended skill ops.
+    """
+    action_type = _extract_attr(raw, "type")
+    if not action_type:
+        return None
+
+    # Try ET first for well-formed XML; fall back to regex for shell content
+    try:
+        root = ET.fromstring(raw)
+        data = {child.tag: (child.text or "").strip() for child in root}
+    except ET.ParseError:
+        data = _extract_children_regex(raw)
+
+    # ── Normalize skill action ────────────────────────────────────────────────
+    # V1 actor syntax:  <action type="skill"><n>name</n></action>
+    # V2 planner syntax: <action type="skill"><op>search</op><query>...</query></action>
+    #                    <action type="skill"><op>request_creation</op><name>...</name><reason>...</reason></action>
+    # The "op" field distinguishes them; absence of "op" implies the actor load form.
+    if action_type == "skill" and "op" not in data and "n" in data:
+        data["op"] = "load"
+
+    return Action(type=action_type, data=data)
+
+
 def parse_response(
     text: str,
 ) -> tuple[str, list[Action], list[ThinkBlock], list[PlanBlock], list[WorkBlock]]:
@@ -154,16 +194,9 @@ def parse_response(
         works.append(WorkBlock(content=m.group(1).strip()))
 
     for m in _ACTION_RE.finditer(text):
-        raw = m.group()
-        action_type = _extract_attr(raw, "type")
-        if not action_type:
-            continue
-        try:
-            root = ET.fromstring(raw)
-            data = {child.tag: (child.text or "").strip() for child in root}
-        except ET.ParseError:
-            data = _extract_children_regex(raw)
-        actions.append(Action(type=action_type, data=data))
+        action = _parse_action(m.group())
+        if action is not None:
+            actions.append(action)
 
     reasoning = _ALL_TAGS_RE.sub("", text).strip()
     return reasoning, actions, thinks, plans, works

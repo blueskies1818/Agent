@@ -1,0 +1,19 @@
+{
+  "updated_at": "2026-04-29T00:00:00",
+  "buckets": {
+    "internals": {
+      "path": "internals",
+      "description": "Agent self-knowledge — architecture docs, engine internals, soul files, and configuration reference.",
+      "content_count": 18,
+      "tags": ["docs", "architecture", "soul", "reference"],
+      "created_at": "2026-04-27T00:00:00"
+    },
+    "skills": {
+      "path": "internals/skills",
+      "description": "Skill cards — one doc per available skill describing usage, flags, and examples.",
+      "content_count": 11,
+      "tags": ["skills", "mods", "reference"],
+      "created_at": "2026-04-28T00:00:00"
+    }
+  }
+}

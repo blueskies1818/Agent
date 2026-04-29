@@ -38,6 +38,7 @@ from config import (
     DOCKER_SHELL,
     DOCKER_WORKDIR,
 )
+from core.log import log
 
 
 # ── Command execution ────────────────────────────────────────────────────────
@@ -210,7 +211,7 @@ def ensure_sandbox() -> None:
     if container_running():
         # Check if the running container has the right mount
         if not _container_has_mount(host_dir):
-            print(f"[sandbox] Mount changed to {host_dir}, recreating container...")
+            log.info(f"Mount changed to {host_dir}, recreating container...", source="sandbox")
             _stop_container()
             _start_container()
         return
@@ -254,11 +255,13 @@ def _resolve_local_path(container_path: str) -> Path:
 
 def _run_docker(command: str, timeout: int) -> str:
     """Execute via `docker exec` inside the sandbox container."""
+    # umask 0000 ensures files created by the container (running as root)
+    # are world-writable on the host bind-mount — no read-only surprises.
     docker_cmd = [
         "docker", "exec",
         "-w", DOCKER_WORKDIR,
         DOCKER_CONTAINER_NAME,
-        DOCKER_SHELL, "-c", command,
+        DOCKER_SHELL, "-c", f"umask 0000; {command}",
     ]
 
     try:
@@ -325,14 +328,21 @@ def _start_container() -> None:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode == 0:
             mount_desc = PROJECT_DIR or SANDBOX_ROOT
-            print(f"[sandbox] Container started → {mount_desc}", flush=True)
+            log.info(f"Container started → {mount_desc}", source="sandbox")
+            # Open permissions on the bind-mounted workspace so both the
+            # container (root) and the host user can read/write freely.
+            subprocess.run(
+                ["docker", "exec", DOCKER_CONTAINER_NAME,
+                 "chmod", "-R", "a+rwX", DOCKER_WORKDIR],
+                capture_output=True, timeout=15,
+            )
         else:
             err = (result.stderr or result.stdout).strip()
-            print(f"[sandbox] Failed to start container: {err}", flush=True)
+            log.error(f"Failed to start container: {err}", source="sandbox")
     except FileNotFoundError:
-        print("[sandbox] Docker not found. Install Docker or use SANDBOX=local", flush=True)
+        log.error("Docker not found. Install Docker or use SANDBOX=local", source="sandbox")
     except Exception as e:
-        print(f"[sandbox] Error starting container: {e}", flush=True)
+        log.error(f"Error starting container: {e}", source="sandbox")
 
 
 def _stop_container() -> None:

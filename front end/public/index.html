@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Glass AI</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <link id="hljs-theme" rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <div class="bg-canvas">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="orb orb-4"></div>
+  </div>
+
+  <div class="app">
+
+    <!-- ── Sidebar ──────────────────────────────────────────── -->
+    <aside class="sidebar glass">
+
+      <div class="sidebar-top">
+        <div class="logo">
+          <div class="logo-gem">✦</div>
+          <span class="logo-name">Glass AI</span>
+        </div>
+      </div>
+
+
+
+      <!-- Sidebar tabs: Chat | Vault | Tasks -->
+      <div class="sidebar-tabs">
+        <button class="stab active" id="stab-chat"  onclick="setSidebarTab('chat')">Chat</button>
+        <button class="stab"        id="stab-kb"    onclick="setSidebarTab('kb')">Vault</button>
+        <button class="stab"        id="stab-tasks" onclick="setSidebarTab('tasks')">Tasks</button>
+      </div>
+
+      <!-- Chat history (visible in chat mode) -->
+      <div class="history-wrap" id="history-wrap">
+        <div class="kb-tree-header">
+          <span class="history-lbl">Conversations</span>
+          <button class="btn-icon" onclick="newChat()" title="New conversation">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+        <div id="hist-list"></div>
+      </div>
+
+      <!-- KB file tree (visible in vault mode) -->
+      <div class="kb-tree-wrap" id="kb-tree-wrap" style="display:none">
+        <div class="kb-tree-header">
+          <span class="history-lbl">Vault Files</span>
+          <button class="btn-icon" onclick="showAddFileModal()" title="New file">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+        <!-- Zoom navigation: hidden until a folder is zoomed -->
+        <div class="vault-zoom-nav" id="vault-zoom-nav" style="display:none">
+          <button class="zoom-nav-btn" onclick="zoomHome()" title="Vault root">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </button>
+          <button class="zoom-nav-btn" onclick="zoomBack()" title="Back">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 18l-6-6 6-6"/>
+            </svg>
+          </button>
+          <span class="zoom-nav-label" id="zoom-nav-label">Zoomed</span>
+        </div>
+        <div id="kb-tree-list"></div>
+      </div>
+
+      <!-- Tasks list (visible in tasks mode) -->
+      <div class="kb-tree-wrap" id="tasks-side-wrap" style="display:none">
+        <div class="kb-tree-header">
+          <span class="history-lbl">Tasks</span>
+          <button class="btn-icon" onclick="showNewTaskForm()" title="New task">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+        <div id="tasks-side-list"></div>
+      </div>
+
+      <div class="sidebar-foot">
+        <button class="theme-btn" onclick="toggleTheme()">
+          <span id="theme-icon">☀️</span>
+          <span id="theme-lbl">Light mode</span>
+        </button>
+      </div>
+
+    </aside>
+
+    <!-- ── Chat main ─────────────────────────────────────────── -->
+    <main class="chat-main glass is-welcome" id="chat-main">
+
+      <div class="chat-header">
+        <span class="chat-title" id="chat-title">New Conversation</span>
+        <div class="chat-header-right">
+          <label class="agent-toggle-wrap" title="Route messages through the AI Agent (requires agent running on port 8765)">
+            <input type="checkbox" id="agent-toggle" onchange="onAgentToggle()">
+            <span class="agent-toggle-track"><span class="agent-toggle-thumb"></span></span>
+            <span class="agent-toggle-lbl">Agent</span>
+          </label>
+          <span class="model-pill" id="model-pill">Glass Harness</span>
+        </div>
+      </div>
+
+      <!-- Welcome zone: centered brand + input + chips -->
+      <div class="welcome-zone" id="welcome-zone">
+        <div class="welcome-center" id="welcome-center">
+
+          <div class="welcome-brand">
+            <div class="welcome-logo">✦</div>
+            <h1 class="welcome-name">Glass AI</h1>
+            <p class="welcome-sub">How can I help you today?</p>
+          </div>
+
+          <div class="input-area" id="input-area">
+            <div class="input-glass glass">
+              <textarea
+                id="msg-input"
+                placeholder="Message Glass AI…"
+                rows="1"
+                onkeydown="onKey(event)"
+                oninput="resize(this)"
+              ></textarea>
+              <button class="send-btn" id="send-btn" onclick="send()" title="Send (Enter)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 2L11 13M22 2L15 22 11 13 2 9l20-7z"/>
+                </svg>
+              </button>
+            </div>
+            <div class="input-hint">Glass AI · Demo mode — no API key required</div>
+          </div>
+
+          <div class="suggestions" id="welcome-suggs">
+            <button class="chip" onclick="useChip(this)">Explain quantum computing</button>
+            <button class="chip" onclick="useChip(this)">Write a sorting algorithm</button>
+            <button class="chip" onclick="useChip(this)">How does glassmorphism work?</button>
+            <button class="chip" onclick="useChip(this)">Compare React vs Vue vs Svelte</button>
+            <button class="chip" onclick="useChip(this)">Best coding practices</button>
+            <button class="chip" onclick="useChip(this)">Plan a project roadmap</button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Messages area -->
+      <div class="msgs-wrap" id="msgs-wrap">
+        <div class="msgs-inner">
+          <div id="msgs-container"></div>
+        </div>
+      </div>
+
+      <div id="input-slot"></div>
+
+    </main>
+
+    <!-- ── Knowledge Base main ─────────────────────────────── -->
+    <div class="kb-main glass" id="kb-main" style="display:none">
+
+      <!-- ── Graph view (default) ── -->
+      <div class="kb-graph-view" id="kb-graph-view">
+        <div class="kb-header">
+          <span class="kb-title">Knowledge Base</span>
+          <span class="kb-hint-pill" id="kb-hint-pill">Click to select · Click again to open · Drag to pin</span>
+        </div>
+        <div class="kb-graph-pane" id="kb-graph-pane">
+          <canvas id="kb-canvas"></canvas>
+
+          <!-- Floating graph toolbar -->
+          <div class="kg-toolbar" id="kg-toolbar">
+            <div class="kg-modes">
+              <button class="kg-btn active" id="kg-nav" onclick="setGraphMode('navigate')" title="Navigate">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 3l14 9-7 1-4 7z"/>
+                </svg>
+              </button>
+              <button class="kg-btn" id="kg-connect" onclick="setGraphMode('connect')" title="Connect nodes">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6"  cy="6"  r="2.5"/>
+                  <circle cx="18" cy="18" r="2.5"/>
+                  <path d="M8 8l8 8"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Add file/folder modal -->
+          <div class="kg-modal-overlay" id="kg-modal" style="display:none" onclick="hideAddFileModal(event)">
+            <div class="kg-modal glass" onclick="event.stopPropagation()">
+              <div class="kg-modal-type-toggle">
+                <button class="kg-type-btn active" id="kg-type-file"   onclick="_setModalType('file')">File</button>
+                <button class="kg-type-btn"         id="kg-type-folder" onclick="_setModalType('folder')">Folder</button>
+              </div>
+              <label class="kg-modal-label" id="kg-modal-name-label">File name</label>
+              <input class="kg-modal-input" id="kg-modal-name" type="text" placeholder="my-note" autocomplete="off"
+                     oninput="_updateModalPreview()" onkeydown="if(event.key==='Enter')createFromModal()">
+              <div id="kg-modal-folder-fields">
+                <label class="kg-modal-label" style="display:none" id="kg-modal-desc-label">Description</label>
+                <input class="kg-modal-input" id="kg-modal-desc" type="text" placeholder="What this folder contains…" autocomplete="off" style="display:none">
+                <label class="kg-modal-label" style="display:none" id="kg-modal-tags-label">Keywords (comma-separated)</label>
+                <input class="kg-modal-input" id="kg-modal-tags" type="text" placeholder="docs, reference, skills" autocomplete="off" style="display:none">
+              </div>
+              <label class="kg-modal-label">Inside folder</label>
+              <select class="kg-modal-select" id="kg-modal-folder" onchange="_updateModalPreview()">
+                <option value="">/ vault root</option>
+              </select>
+              <div class="kg-modal-preview" id="kg-modal-preview"></div>
+              <div class="kg-modal-actions">
+                <button class="kg-modal-cancel" onclick="hideAddFileModal()">Cancel</button>
+                <button class="kg-modal-create" onclick="createFromModal()">Create</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ── File view (shown when a file is open) ── -->
+      <div class="kb-file-view" id="kb-file-view" style="display:none">
+
+        <!-- Top bar -->
+        <div class="kb-file-bar">
+          <button class="kb-back-btn" onclick="closeEditor()" title="Back to graph">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 12H5M12 5l-7 7 7 7"/>
+            </svg>
+            Graph
+          </button>
+          <span class="kb-file-name" id="kb-editor-name">untitled.md</span>
+          <div class="kb-file-actions">
+            <button class="kb-save-btn" id="kb-save-btn" onclick="saveVaultFile()">Save</button>
+          </div>
+        </div>
+
+        <!-- Formatting toolbar -->
+        <div class="kb-toolbar">
+
+          <span class="tb-group-label">Format</span>
+          <button class="tb-btn" onmousedown="tbCmd(event,'bold')"          title="Bold"><b>B</b></button>
+          <button class="tb-btn" onmousedown="tbCmd(event,'italic')"        title="Italic"><i>I</i></button>
+          <button class="tb-btn" onmousedown="tbCmd(event,'strikeThrough')" title="Strikethrough"><s>S</s></button>
+          <button class="tb-btn" onmousedown="tbCmd(event,'underline')"     title="Underline"><u>U</u></button>
+
+          <div class="tb-sep"></div>
+          <span class="tb-group-label">Heading</span>
+          <button class="tb-btn" onmousedown="tbBlock(event,'H1')" title="Heading 1">H1</button>
+          <button class="tb-btn" onmousedown="tbBlock(event,'H2')" title="Heading 2">H2</button>
+          <button class="tb-btn" onmousedown="tbBlock(event,'H3')" title="Heading 3">H3</button>
+          <button class="tb-btn" onmousedown="tbBlock(event,'P')"  title="Paragraph">¶</button>
+
+          <div class="tb-sep"></div>
+          <span class="tb-group-label">Insert</span>
+          <button class="tb-btn"      onmousedown="tbInlineCode(event)"  title="Inline code"><code>`&thinsp;`</code></button>
+          <button class="tb-btn"      onmousedown="tbCodeBlock(event)"   title="Code block"><code>```</code></button>
+          <button class="tb-btn"      onmousedown="tbTable(event)"       title="Insert table">⊞ Table</button>
+          <button class="tb-btn"      onmousedown="tbCmd(event,'insertHorizontalRule')" title="Divider">—</button>
+
+          <div class="tb-sep"></div>
+          <span class="tb-group-label">List</span>
+          <button class="tb-btn" onmousedown="tbCmd(event,'insertUnorderedList')" title="Bullet list">• List</button>
+          <button class="tb-btn" onmousedown="tbCmd(event,'insertOrderedList')"   title="Numbered list">1. List</button>
+          <button class="tb-btn" onmousedown="tbBlock(event,'BLOCKQUOTE')"        title="Blockquote">❝ Quote</button>
+
+          <div class="tb-sep"></div>
+          <button class="tb-btn" onmousedown="tbLink(event)" title="Insert link">🔗 Link</button>
+
+        </div>
+
+        <!-- WYSIWYG contenteditable area -->
+        <div
+          class="kb-editor"
+          id="kb-editor"
+          contenteditable="true"
+          spellcheck="false"
+        ></div>
+
+      </div>
+    </div>
+
+    <!-- ── Recurring Tasks main ───────────────────────────── -->
+    <div class="kb-main glass" id="tasks-main" style="display:none">
+
+      <!-- Grid view -->
+      <div class="kb-graph-view" id="tasks-grid-view">
+        <div class="kb-header">
+          <span class="kb-title">Recurring Tasks</span>
+          <button class="kb-save-btn" onclick="showNewTaskForm()">+ New Task</button>
+        </div>
+        <div class="tasks-grid-wrap">
+          <div class="tasks-grid" id="tasks-grid"></div>
+        </div>
+      </div>
+
+      <!-- Detail / edit view -->
+      <div class="kb-file-view" id="tasks-detail-view" style="display:none">
+        <div class="kb-file-bar">
+          <button class="kb-back-btn" onclick="closeTaskDetail()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 12H5M12 5l-7 7 7 7"/>
+            </svg>
+            Tasks
+          </button>
+          <span class="kb-file-name" id="td-title">Task</span>
+          <div class="kb-file-actions">
+            <button class="kb-save-btn" onclick="saveTaskDetail()">Save</button>
+          </div>
+        </div>
+
+        <div class="task-form">
+
+          <label class="task-form-label">Prompt</label>
+          <textarea class="task-form-textarea" id="td-prompt" placeholder="Describe what the agent should do…" rows="4"></textarea>
+
+          <div class="task-form-row">
+            <div class="task-form-col">
+              <label class="task-form-label">Schedule type</label>
+              <select class="task-form-select" id="td-sched-type">
+                <option value="interval">Interval (e.g. 12h, 30m)</option>
+                <option value="cron">Cron expression</option>
+                <option value="daily">Daily at time</option>
+                <option value="once">One-time</option>
+              </select>
+            </div>
+            <div class="task-form-col">
+              <label class="task-form-label">Schedule value</label>
+              <input class="task-form-input" id="td-sched-val" type="text" placeholder="e.g. 12h · 0 9 * * * · 09:00">
+            </div>
+          </div>
+
+          <div class="task-form-row">
+            <div class="task-form-col">
+              <label class="task-form-label">Next run</label>
+              <input class="task-form-input" id="td-next-run" type="datetime-local">
+            </div>
+            <div class="task-form-col">
+              <label class="task-form-label">Priority</label>
+              <select class="task-form-select" id="td-priority">
+                <option value="1">1 — Highest</option>
+                <option value="2">2 — High</option>
+                <option value="3">3 — Normal</option>
+                <option value="4">4 — Low</option>
+                <option value="5">5 — Lowest</option>
+              </select>
+            </div>
+          </div>
+
+          <label class="task-form-label">Termination</label>
+          <div class="task-form-row">
+            <div class="task-form-col">
+              <select class="task-form-select" id="td-term-type" onchange="_updateTermFields()">
+                <option value="never">Never (run indefinitely)</option>
+                <option value="on_date">On date</option>
+                <option value="after_runs">After N runs</option>
+              </select>
+            </div>
+            <div class="task-form-col" id="td-term-date-wrap" style="display:none">
+              <input class="task-form-input" id="td-term-date" type="datetime-local">
+            </div>
+            <div class="task-form-col" id="td-term-count-wrap" style="display:none">
+              <input class="task-form-input" id="td-term-count" type="number" min="1" placeholder="Number of runs">
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Document split panel ──────────────────────────── -->
+    <div id="doc-resize-handle"></div>
+    <div id="doc-panel" class="glass">
+      <div class="doc-panel-bar">
+        <span class="doc-panel-title" id="doc-panel-title">Document</span>
+        <button class="doc-panel-close" onclick="closeDocPanel()" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <path d="M18 6L6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div class="doc-panel-content" id="doc-panel-content"></div>
+    </div>
+
+  </div><!-- /.app -->
+
+  <script src="js/graph.js"></script>
+  <script src="js/vault.js"></script>
+  <script src="js/tasks.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

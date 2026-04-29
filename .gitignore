@@ -4,22 +4,24 @@ __pycache__/
 *.pyo
 .venv/
 venv/
-.claude/
 
 # Environment
 .env
 .passwd
 
-# Logs and memory (optional — you may want to track memory.txt)
+# Runtime memory and logs (session data — not source)
 memory/chroma/
 memory/logs/
 memory/memory.txt
+memory/plans/
 *.db
+*.db-shm
+*.db-wal
+
+# Scheduled task files (runtime state)
+scheduled/
 
 # Editor
 .DS_Store
 .idea/
 .vscode/
-
-# Workspace contents (AI's sandbox — don't commit generated files)
-workspace/*

@@ -1,0 +1,13 @@
+{
+  "_comment": "External MCP servers to connect at startup. Add entries here to extend the agent with third-party tools.",
+  "_formats": {
+    "stdio": {"name": "my-server", "transport": "stdio", "command": "python", "args": ["path/to/server.py"], "env": {"KEY": "value"}},
+    "http":  {"name": "my-server", "transport": "http",  "url": "http://localhost:8080/mcp"}
+  },
+  "_examples": [
+    "filesystem: {\"name\": \"filesystem\", \"transport\": \"stdio\", \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/tmp\"]}",
+    "github:     {\"name\": \"github\",     \"transport\": \"stdio\", \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-github\"]}",
+    "claude-code: claude mcp add agent-tools -- python -m mcp_servers.serve"
+  ],
+  "servers": []
+}

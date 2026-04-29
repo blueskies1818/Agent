@@ -2,62 +2,69 @@
 memory/embedder.py — Embed text and persist into ChromaDB.
 
 Responsible for:
-  - Generating embeddings via OpenAI text-embedding-3-small
+  - Generating embeddings via Ollama (nomic-embed-text, local, no API key)
   - Storing (text, embedding, metadata) in a persistent ChromaDB collection
   - Deduplicating identical content so the same fact isn't stored twice
 
 ChromaDB stores its data in memory/chroma/ as a plain directory.
 No server needed — it runs fully embedded in-process.
+
+Prerequisite: Ollama running locally (`ollama serve`) with the model pulled:
+    ollama pull nomic-embed-text
 """
 
 from __future__ import annotations
 
 import hashlib
-import os
 from datetime import datetime
 from pathlib import Path
 
 import chromadb
 from chromadb import Collection
-from openai import OpenAI
 
-from config import LOGS_DIR  # reuse base dir derivation
+from config import LOGS_DIR, OLLAMA_EMBED_MODEL
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-_MEMORY_DIR  = Path(LOGS_DIR).parent          # memory/
-_CHROMA_DIR  = _MEMORY_DIR / "chroma"         # memory/chroma/
-_COLLECTION  = "agent_memory"
-_EMBED_MODEL = "text-embedding-3-small"
+_MEMORY_DIR        = Path(LOGS_DIR).parent          # memory/
+_CHROMA_DIR        = _MEMORY_DIR / "chroma"         # memory/chroma/
+_COLLECTION        = "agent_memory"
+_SKILLS_COLLECTION = "agent_skills"
 
 
 # ── Lazy singletons ───────────────────────────────────────────────────────────
 
 _chroma_client: chromadb.PersistentClient | None = None
 _collection: Collection | None = None
-_openai_client: OpenAI | None = None
+_skills_collection: Collection | None = None
+
+
+def _get_client() -> chromadb.PersistentClient:
+    global _chroma_client
+    if _chroma_client is None:
+        _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+        _chroma_client = chromadb.PersistentClient(path=str(_CHROMA_DIR))
+    return _chroma_client
 
 
 def _get_collection() -> Collection:
-    global _chroma_client, _collection
+    global _collection
     if _collection is None:
-        _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-        _chroma_client = chromadb.PersistentClient(path=str(_CHROMA_DIR))
-        _collection = _chroma_client.get_or_create_collection(
+        _collection = _get_client().get_or_create_collection(
             name=_COLLECTION,
             metadata={"hnsw:space": "cosine"},   # cosine similarity for text
         )
     return _collection
 
 
-def _get_openai() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise EnvironmentError("OPENAI_API_KEY is not set.")
-        _openai_client = OpenAI(api_key=api_key)
-    return _openai_client
+def _get_skills_collection() -> Collection:
+    global _skills_collection
+    if _skills_collection is None:
+        _skills_collection = _get_client().get_or_create_collection(
+            name=_SKILLS_COLLECTION,
+            metadata={"hnsw:space": "cosine"},
+        )
+    return _skills_collection
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
@@ -114,9 +121,60 @@ def embed_conversation_turn(user: str, assistant: str, metadata: dict | None = N
     return embed_and_store(text, metadata=meta)
 
 
+def embed_skill(name: str, description: str, content: str, metadata: dict | None = None) -> str:
+    """
+    Embed a skill file and store it in the agent_skills ChromaDB collection.
+
+    Uses the skill name as the stable document ID so re-registering a skill
+    overwrites the previous embedding without creating duplicates.
+
+    Args:
+        name:        Skill name (used as document ID — e.g. "ffmpeg").
+        description: One-line description used for semantic search.
+        content:     Full skill file content (stored for retrieval, but
+                     indexed by description for Phase 1 hint retrieval).
+        metadata:    Optional extra metadata fields.
+    """
+    col   = _get_skills_collection()
+    doc_id = f"skill:{name}"
+
+    # Index text = description + full content for rich semantic matching
+    index_text = f"{name}: {description}\n\n{content}".strip()
+    embedding  = _embed(index_text)
+
+    meta = {
+        "name":        name,
+        "description": description,
+        "timestamp":   datetime.now().isoformat(),
+        **(metadata or {}),
+    }
+
+    existing = col.get(ids=[doc_id])
+    if existing["ids"]:
+        col.update(
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[content],
+            metadatas=[meta],
+        )
+    else:
+        col.add(
+            ids=[doc_id],
+            embeddings=[embedding],
+            documents=[content],
+            metadatas=[meta],
+        )
+    return doc_id
+
+
 def remove(doc_id: str) -> None:
-    """Remove a specific document by ID."""
+    """Remove a specific document by ID from the memory collection."""
     _get_collection().delete(ids=[doc_id])
+
+
+def remove_skill(name: str) -> None:
+    """Remove a skill from the skills collection by skill name."""
+    _get_skills_collection().delete(ids=[f"skill:{name}"])
 
 
 def count() -> int:
@@ -124,15 +182,18 @@ def count() -> int:
     return _get_collection().count()
 
 
+def skill_count() -> int:
+    """Return total number of embedded skills."""
+    return _get_skills_collection().count()
+
+
 # ── Internals ─────────────────────────────────────────────────────────────────
 
 def _embed(text: str) -> list[float]:
-    """Generate an embedding vector for text using OpenAI."""
-    response = _get_openai().embeddings.create(
-        model=_EMBED_MODEL,
-        input=text,
-    )
-    return response.data[0].embedding
+    """Generate an embedding vector for text using Ollama (local, no API key)."""
+    import ollama
+    response = ollama.embeddings(model=OLLAMA_EMBED_MODEL, prompt=text)
+    return response["embedding"]
 
 
 def _content_hash(text: str) -> str:

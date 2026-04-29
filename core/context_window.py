@@ -156,6 +156,10 @@ class ContextWindow:
         """Remove all pages from a specific source (e.g. stale system pages)."""
         self._pages = [p for p in self._pages if p.source != source]
 
+    def clear(self) -> None:
+        """Remove all pages. Used by the worker context — reset each node invocation."""
+        self._pages = []
+
     # ── Properties ─────────────────────────────────────────────────────────────
 
     @property

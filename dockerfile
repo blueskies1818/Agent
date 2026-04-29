@@ -72,6 +72,13 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # ── Workspace ─────────────────────────────────────────────────────────────────
 RUN mkdir -p /workspace
 
+# ── Default umask ─────────────────────────────────────────────────────────────
+# All files created inside the container (including via `docker exec bash -c`)
+# get 0666/0777 permissions so the host user can read/write them on the
+# bind-mounted workspace without having to sudo or chmod.
+RUN echo 'umask 0000' > /etc/bash_env.sh
+ENV BASH_ENV=/etc/bash_env.sh
+
 # ── Idle entrypoint ───────────────────────────────────────────────────────────
 WORKDIR /workspace
 CMD ["tail", "-f", "/dev/null"]

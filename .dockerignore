@@ -13,9 +13,6 @@ memory/logs/
 memory/agent.db
 memory/memory.txt
 
-# Workspace (volume-mounted at runtime)
-workspace/
-
 # IDE / OS
 .git/
 .idea/
@@ -27,3 +24,6 @@ workspace/
 # Env
 .env
 .env.*
+
+# Node modules
+node_modules/

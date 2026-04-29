@@ -1,5 +1,5 @@
 import importlib
-from agents.base import BaseAgent
+from providers.base import BaseAgent
 
 _CLASS_NAMES: dict[str, str] = {
     "claude": "ClaudeAgent",

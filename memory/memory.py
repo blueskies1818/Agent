@@ -1,77 +1,104 @@
 """
 memory/memory.py — Persistent memory and session logging.
 
-Memory model:
-  memory/memory.txt    -> flat text fallback (human-readable, always written)
-  memory/chroma/       -> ChromaDB vector store (semantic retrieval)
-  memory/logs/         -> per-session turn transcripts (auto-written by loop)
+Memory model (V2):
+  memory/agent.db     -> SQLite: authoritative structured store (sessions, turns,
+                         task records, long-term facts).  Never lost even if
+                         ChromaDB is unavailable.
+  memory/chroma/      -> ChromaDB: semantic search index only.  Rebuildable from
+                         agent.db if corrupted.  If unavailable, RAG returns empty
+                         — agent still works, just without semantic memory hints.
+  memory/logs/        -> Per-session JSON logs (written lazily — ghost sessions
+                         that stay conversational leave no file behind).
 
-write_memory() writes to both stores so the system can always fall back
-to reading memory.txt if ChromaDB is unavailable, and can do semantic
-search when it is available.
+No flat file (memory.txt) — ChromaDB + SQLite are the single source of truth.
 """
 
+import json
 import os
 from datetime import datetime
 
-from config import MEMORY_FILE, LOGS_DIR
-
-
-# ── Ensure directories exist ──────────────────────────────────────────────────
-
-def _ensure_dirs() -> None:
-    os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
-    os.makedirs(LOGS_DIR, exist_ok=True)
+from config import LOGS_DIR
 
 
 # ── Persistent memory ─────────────────────────────────────────────────────────
 
 def read_memory() -> str:
-    """Return contents of memory.txt, or empty string if it doesn't exist."""
-    _ensure_dirs()
-    if not os.path.exists(MEMORY_FILE):
+    """
+    Return all stored memory facts as a single string.
+
+    Reads from the SQLite long_term table (keys prefixed with 'memory:').
+    Returns empty string if nothing is stored or the DB is unavailable.
+    """
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        rows = conn.execute(
+            "SELECT value FROM long_term WHERE key LIKE 'memory:%' ORDER BY updated_at ASC"
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return ""
+        return "\n\n".join(row[0] for row in rows)
+    except Exception:
         return ""
-    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-        return f.read().strip()
 
 
 def write_memory(content: str) -> None:
     """
-    Persist a fact to both memory.txt (flat) and ChromaDB (vector).
+    Persist a fact to SQLite (authoritative) and ChromaDB (semantic index).
 
-    ChromaDB embedding is attempted but never blocks the write — if the
-    OpenAI API is unavailable the fact is still saved to memory.txt.
+    SQLite write always happens first.  ChromaDB embedding is best-effort —
+    if Ollama is unavailable the fact is still saved to SQLite and retrievable
+    via read_memory().
     """
-    _ensure_dirs()
     content = content.strip()
     if not content:
         return
 
-    # 1. Always write to flat file
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    entry = f"\n[{timestamp}]\n{content}\n"
-    with open(MEMORY_FILE, "a", encoding="utf-8") as f:
-        f.write(entry)
+    import hashlib
+    key = "memory:" + hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    timestamp = datetime.now().isoformat()
 
-    # 2. Best-effort embed into ChromaDB
+    # 1. Always write to SQLite long_term
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute(
+            "INSERT OR IGNORE INTO long_term (key, value, updated_at) VALUES (?, ?, ?)",
+            (key, content, timestamp),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        from core.log import log
+        log.error(f"SQLite write failed: {e}", source="memory")
+
+    # 2. Best-effort embed into ChromaDB for semantic retrieval
     try:
         from memory.embedder import embed_and_store
         embed_and_store(content, metadata={"source": "agent", "timestamp": timestamp})
     except Exception as e:
-        # Silently degrade — flat file is the source of truth
-        import sys
-        print(f"[memory] ChromaDB write skipped: {e}", file=sys.stderr)
+        from core.log import log
+        log.error(f"ChromaDB write skipped: {e}", source="memory")
 
 
 def clear_memory() -> None:
     """
-    Wipe memory.txt and reset the ChromaDB collection.
-    Used by wipeClean.py.
+    Wipe all stored memory facts from SQLite and reset the ChromaDB collection.
+    Used by wipeMem.py.
     """
-    _ensure_dirs()
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        f.write("")
+    # 1. Clear SQLite memory entries
+    try:
+        from memory.db import init_db
+        conn = init_db()
+        conn.execute("DELETE FROM long_term WHERE key LIKE 'memory:%'")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
+    # 2. Reset ChromaDB collection
     try:
         import chromadb
         from memory.embedder import _CHROMA_DIR, _COLLECTION
@@ -88,37 +115,94 @@ def clear_memory() -> None:
 # ── Session logging ───────────────────────────────────────────────────────────
 
 class SessionLogger:
-    """Writes a structured log file for one run of the agent."""
+    """
+    Writes a structured JSON log file for one run of the agent.
+
+    Ghost session behaviour: no file is created at construction time.
+    The first call to log() triggers _anchor(), which creates the file.
+    Purely conversational sessions that close without any log() call leave
+    no file behind at all.
+
+    Schema:
+    {
+        "session_id": "2026-04-07_14-32-01",
+        "started_at": "2026-04-07T14:32:01Z",
+        "ended_at":   null | "2026-04-07T14:45:19Z",
+        "turns": [
+            {
+                "turn":      1,
+                "timestamp": "2026-04-07T14:32:05Z",
+                "role":      "user",
+                "content":   "...",
+                "metadata":  {}
+            },
+            ...
+        ]
+    }
+    """
 
     def __init__(self) -> None:
-        _ensure_dirs()
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._path = os.path.join(LOGS_DIR, f"{ts}.log")
+        now = datetime.now()
+        self._session_id = now.strftime("%Y-%m-%d_%H-%M-%S")
+        self._started_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._path: str | None = None   # None = ghost (not yet written to disk)
         self._turn = 0
-        self._write(f"=== SESSION START {ts} ===\n")
+        self._turns: list[dict] = []
 
     def log(self, role: str, content: str) -> None:
+        """Record a conversation turn.  Anchors to disk on first call."""
         self._turn += 1
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+
         try:
             from mods.passwd.cache import scrub
             content = scrub(content)
         except Exception:
             pass
-        block = (
-            f"\n--- Turn {self._turn} | {role} | {ts} ---\n"
-            f"{content.strip()}\n"
-        )
-        self._write(block)
+
+        self._turns.append({
+            "turn":      self._turn,
+            "timestamp": ts,
+            "role":      role.lower(),
+            "content":   content.strip(),
+            "metadata":  {},
+        })
+
+        if self._path is None:
+            self._anchor()
+        else:
+            self._flush()
 
     def close(self) -> None:
-        ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self._write(f"\n=== SESSION END {ts} ===\n")
-
-    def _write(self, text: str) -> None:
-        with open(self._path, "a", encoding="utf-8") as f:
-            f.write(text)
+        """Write ended_at and finalize the log.  No-op for ghost sessions."""
+        if self._path is None:
+            return
+        self._flush(ended_at=datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"))
 
     @property
-    def path(self) -> str:
+    def path(self) -> str | None:
+        """Log file path, or None if this is still a ghost session."""
         return self._path
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    # ── Internals ──────────────────────────────────────────────────────────
+
+    def _anchor(self) -> None:
+        """Create the log directory and file on first real log() call."""
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        self._path = os.path.join(LOGS_DIR, f"{self._session_id}.json")
+        self._flush()
+
+    def _flush(self, ended_at: str | None = None) -> None:
+        """Write (or overwrite) the JSON log file with current state."""
+        data = {
+            "session_id": self._session_id,
+            "started_at": self._started_at,
+            "ended_at":   ended_at,
+            "turns":      self._turns,
+        }
+        with open(self._path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)

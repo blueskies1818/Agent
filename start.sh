@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# ── Agent Launcher ────────────────────────────────────────────────────────────
+# ── Glass Harness + Glass AI Launcher ────────────────────────────────────────
+#
+# Starts both the Glass Harness Python backend and the Glass AI Node frontend.
+# All logs stream into a single maintenance console.
 #
 # Usage:
-#   ./start.sh                                    # local mode, default workspace
-#   PROJECT=/home/mint/my-app ./start.sh          # local mode, project directory
-#   SANDBOX=docker ./start.sh                     # docker mode, default volume
-#   PROJECT=/home/mint/my-app SANDBOX=docker ./start.sh  # docker + project sync
-#   PROVIDER=claude TIER=fast ./start.sh          # override provider/tier
+#   ./start.sh                                       local mode, default workspace
+#   PROJECT=/home/mint/my-app ./start.sh             local mode, project directory
+#   SANDBOX=docker ./start.sh                        docker mode, default volume
+#   PROJECT=/home/mint/my-app SANDBOX=docker ./start.sh  docker + project sync
+#   PLANNER_PROVIDER=claude WORKER_PROVIDER=openai ./start.sh  override providers
+#   GLASS_AI_PORT=4000 ./start.sh                    run Glass AI on a different port
+#
+# After launch, a maintenance console opens — type 'help' for commands.
+#   Glass Harness API: http://127.0.0.1:8765
+#   Glass AI UI:       http://localhost:3000
 #
 set -euo pipefail
 
@@ -193,6 +201,40 @@ else
     fi
 fi
 
-# ── 5. Launch ─────────────────────────────────────────────────────────────────
+# ── 5. Glass AI Node dependencies ─────────────────────────────────────────────
+FRONTEND_DIR="$SCRIPT_DIR/front end"
+GLASS_AI_PORT="${GLASS_AI_PORT:-3000}"
+
+# Kill any existing process on the Glass AI port so we own it cleanly
+EXISTING_PID=$(lsof -ti ":$GLASS_AI_PORT" 2>/dev/null || true)
+if [ -n "$EXISTING_PID" ]; then
+    warn "Port $GLASS_AI_PORT in use (pid $EXISTING_PID) — stopping it..."
+    kill "$EXISTING_PID" 2>/dev/null || true
+    sleep 0.5
+fi
+
+if command -v node &>/dev/null; then
+    NODE_VER=$(node --version 2>/dev/null | sed 's/v//' | cut -d'.' -f1)
+    if [ -n "$NODE_VER" ] && [ "$NODE_VER" -lt 18 ] 2>/dev/null; then
+        warn "Node.js $NODE_VER detected — Glass AI requires Node 18+. UI will be skipped."
+    elif [ -d "$FRONTEND_DIR" ]; then
+        PKG_HASH_FILE="$VENV_DIR/.npm_hash"
+        PKG_CURRENT=$(md5sum "$FRONTEND_DIR/package.json" 2>/dev/null | cut -d' ' -f1 || echo "none")
+        PKG_LAST=$(cat "$PKG_HASH_FILE" 2>/dev/null || echo "")
+
+        if [ ! -d "$FRONTEND_DIR/node_modules" ] || [ "$PKG_CURRENT" != "$PKG_LAST" ]; then
+            info "Installing Glass AI Node dependencies..."
+            npm install --prefix "$FRONTEND_DIR" --silent
+            echo "$PKG_CURRENT" > "$PKG_HASH_FILE"
+            ok "Glass AI dependencies installed."
+        else
+            info "Glass AI dependencies up to date."
+        fi
+    fi
+else
+    warn "Node.js not found — Glass AI UI will be skipped. Install Node 18+ to enable it."
+fi
+
+# ── 6. Launch ─────────────────────────────────────────────────────────────────
 echo ""
 exec python main.py "$@"

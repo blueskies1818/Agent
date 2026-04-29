@@ -22,7 +22,10 @@ def _add_messages(left: list[dict], right: list[dict]) -> list[dict]:
 class AgentState(TypedDict):
     messages:     Annotated[list[dict], _add_messages]
     plan:         list[str]
+    plan_step:    int           # current step index in the plan file
     actor_turn:   int
     done:         bool
+    blocked:      bool          # actor signalled escalation
+    escalation:   dict | None   # {level, reason, need} from escalate action
     system:       str
     last_actions: list[str]

@@ -34,13 +34,13 @@ from functools import wraps
 from mods._shared import extract_quoted as _extract_quoted
 
 from config import DISPLAY_RESOLUTION, DISPLAY_NUMBER, UI_SETTLE_DELAY
+from engine.media import MediaAttachment
 from engine.mod_api import ModResult, log_action
 from engine.sandbox import run_command, read_file, is_docker
 
-NAME        = "debug_ui"
-DESCRIPTION = "Launch and interact with GUI applications via headless display"
-
-_SCREENSHOT_PATH = "/tmp/_debug_ui_screenshot.png"
+_SCREENSHOT_PATH      = "/tmp/_debug_ui_screenshot.png"
+_WORKSPACE_LATEST     = "/workspace/.agent/screenshots/latest.png"
+_WORKSPACE_SCREENSHOTS = "/workspace/.agent/screenshots"
 
 # How long to wait for an app to render its first frame after launch.
 _STARTUP_DELAY = 3.0
@@ -133,24 +133,24 @@ def _ensure_display() -> str | None:
     Start Xvfb, dbus, and the frame server if not already running.
     Returns error text or None.
     """
-    # In debug_ui.py, after starting Xvfb:
-    for _ in range(10):
-        if _get_exit_code(run_command(f"xdpyinfo -display :{DISPLAY_NUMBER}")) == 0:
-            break
-        time.sleep(0.5)
-        
     check = run_command(f"xdpyinfo -display {DISPLAY_NUMBER} >/dev/null 2>&1 && echo UP || echo DOWN")
 
     if "UP" not in check:
-        # Display not running — start it
+        # Display not running — start dbus then Xvfb
         run_command("dbus-daemon --session --fork --address=unix:path=/tmp/dbus-session 2>/dev/null || true")
-
-        result = run_command(
-            f"Xvfb {DISPLAY_NUMBER} -screen 0 {DISPLAY_RESOLUTION} -ac +extension GLX +render -noreset &"
-            f" sleep 0.5 && echo STARTED"
+        run_command(
+            f"nohup Xvfb {DISPLAY_NUMBER} -screen 0 {DISPLAY_RESOLUTION} -ac +extension GLX +render -noreset "
+            f"> /tmp/xvfb.log 2>&1 &"
         )
-        if "STARTED" not in result:
-            return f"[ERROR] Failed to start virtual display: {result}"
+
+        # Poll until the display is ready (up to 5 seconds)
+        for _ in range(10):
+            time.sleep(0.5)
+            if "UP" in run_command(f"xdpyinfo -display {DISPLAY_NUMBER} >/dev/null 2>&1 && echo UP || echo DOWN"):
+                break
+        else:
+            xvfb_log = run_command("cat /tmp/xvfb.log 2>/dev/null || echo '(no log)'")
+            return f"[ERROR] Failed to start virtual display.\n{xvfb_log}"
 
     # Always ensure frame server is registered — whether we just created
     # the display or it was already running from a previous command.
@@ -184,7 +184,7 @@ def _capture() -> bytes | None:
         run_command(
             f"rm -f {_SCREENSHOT_PATH}.tmp && "
             f"DISPLAY={DISPLAY_NUMBER} import -window root png:{_SCREENSHOT_PATH}.tmp && "
-            f"convert {_SCREENSHOT_PATH}.tmp -depth 8 -type TrueColor png:{_SCREENSHOT_PATH}"
+            f"convert {_SCREENSHOT_PATH}.tmp -resize 960x600\\> -quality 85 -depth 8 png:{_SCREENSHOT_PATH}"
         )
         new_frame = read_file(_SCREENSHOT_PATH)
         
@@ -195,6 +195,31 @@ def _capture() -> bytes | None:
         return _CACHED_FRAME
     finally:
         _CAPTURE_BUSY = False
+
+
+def _persist_screenshot(img: bytes, app_desc: str = "") -> None:
+    """Save the latest screenshot to workspace for cross-turn persistence."""
+    try:
+        run_command(f"mkdir -p {_WORKSPACE_SCREENSHOTS}")
+        run_command(f"cp {_SCREENSHOT_PATH} {_WORKSPACE_LATEST} 2>/dev/null || true")
+        from engine.mod_api import save_fact
+        desc = f": {app_desc}" if app_desc else ""
+        save_fact(
+            f"debug_ui GUI session active{desc}. "
+            f"Latest screenshot saved at {_WORKSPACE_LATEST}. "
+            "Use debug_ui -screenshot to see the current state."
+        )
+    except Exception:
+        pass
+
+
+def _to_attachments(imgs: list[bytes]) -> list[MediaAttachment]:
+    """Convert a list of raw PNG bytes to MediaAttachment objects."""
+    return [
+        MediaAttachment(type="image", data=img, mime_type="image/png")
+        for img in imgs
+        if img
+    ]
 
 
 def _is_blank(img_bytes: bytes) -> bool:
@@ -213,6 +238,7 @@ def _capture_after_action() -> tuple[str, list[bytes]]:
     img = _capture()
     if not img:
         return "screenshot failed — display may not be running", []
+    _persist_screenshot(img)
     if _is_blank(img):
         return (
             "screenshot captured but screen appears blank — "
@@ -233,6 +259,7 @@ def _capture_with_retry() -> tuple[str, list[bytes]]:
     for attempt in range(1, _MAX_CAPTURE_RETRIES + 1):
         img = _capture()
         if img and not _is_blank(img):
+            _persist_screenshot(img)
             return f"screenshot captured (attempt {attempt})", [img]
         if attempt < _MAX_CAPTURE_RETRIES:
             print(f"  [debug_ui] screen blank, retrying ({attempt}/{_MAX_CAPTURE_RETRIES})...",
@@ -240,6 +267,7 @@ def _capture_with_retry() -> tuple[str, list[bytes]]:
             time.sleep(_RETRY_INTERVAL)
 
     if img:
+        _persist_screenshot(img)
         return (
             f"screenshot captured but screen appears blank after "
             f"{_MAX_CAPTURE_RETRIES} attempts ({_MAX_CAPTURE_RETRIES * _RETRY_INTERVAL:.0f}s). "
@@ -267,6 +295,11 @@ def _start(command: str) -> ModResult:
         f"{command} > /tmp/_debug_ui_app.log 2>&1 &"
     )
     log_action(f"launched: {command}", source="debug_ui")
+    try:
+        from engine.mod_api import save_fact
+        save_fact(f"debug_ui GUI session started: `{command}` launched on virtual display.")
+    except Exception:
+        pass
 
     time.sleep(_STARTUP_DELAY)
 
@@ -278,12 +311,12 @@ def _start(command: str) -> ModResult:
         return ModResult(
             text=f"Application launched: {command}\n{status}\n\n"
                  f"App log (may indicate why screen is blank):\n{app_log}",
-            images=images,
+            attachments=_to_attachments(images),
         )
 
     return ModResult(
         text=f"Application launched: {command}\n{status}",
-        images=images,
+        attachments=_to_attachments(images),
     )
 
 
@@ -292,7 +325,7 @@ def _screenshot() -> ModResult:
     """Capture the current screen without any interaction."""
     status, images = _capture_with_retry()
     log_action("took screenshot", source="debug_ui")
-    return ModResult(text=status, images=images)
+    return ModResult(text=status, attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -300,7 +333,7 @@ def _click(x: str, y: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 1")
     log_action(f"clicked at ({x}, {y})", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"clicked at ({x}, {y}) — {status}", images=images)
+    return ModResult(text=f"clicked at ({x}, {y}) — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -308,7 +341,7 @@ def _double_click(x: str, y: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click --repeat 2 1")
     log_action(f"double-clicked at ({x}, {y})", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"double-clicked at ({x}, {y}) — {status}", images=images)
+    return ModResult(text=f"double-clicked at ({x}, {y}) — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -316,7 +349,7 @@ def _right_click(x: str, y: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool mousemove {x} {y} click 3")
     log_action(f"right-clicked at ({x}, {y})", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"right-clicked at ({x}, {y}) — {status}", images=images)
+    return ModResult(text=f"right-clicked at ({x}, {y}) — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -325,7 +358,7 @@ def _type_text(text: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool type --delay 50 '{safe}'")
     log_action(f"typed: \"{text}\"", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"typed \"{text}\" — {status}", images=images)
+    return ModResult(text=f"typed \"{text}\" — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -333,7 +366,7 @@ def _press_key(key: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool key {key}")
     log_action(f"pressed key: {key}", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"pressed {key} — {status}", images=images)
+    return ModResult(text=f"pressed {key} — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -342,7 +375,7 @@ def _scroll(direction: str) -> ModResult:
     run_command(f"DISPLAY={DISPLAY_NUMBER} xdotool click --repeat 3 {button}")
     log_action(f"scrolled {direction}", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"scrolled {direction} — {status}", images=images)
+    return ModResult(text=f"scrolled {direction} — {status}", attachments=_to_attachments(images))
 
 
 @_requires_display
@@ -353,7 +386,7 @@ def _drag(x1: str, y1: str, x2: str, y2: str) -> ModResult:
     )
     log_action(f"dragged from ({x1},{y1}) to ({x2},{y2})", source="debug_ui")
     status, images = _capture_after_action()
-    return ModResult(text=f"dragged ({x1},{y1})→({x2},{y2}) — {status}", images=images)
+    return ModResult(text=f"dragged ({x1},{y1})→({x2},{y2}) — {status}", attachments=_to_attachments(images))
 
 
 def _close() -> ModResult:

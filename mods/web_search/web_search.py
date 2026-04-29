@@ -14,9 +14,6 @@ from __future__ import annotations
 
 from mods._shared import extract_quoted as _extract_quoted
 
-NAME        = "search_web"
-DESCRIPTION = "Search the internet and return relevant text excerpts"
-
 
 def handle(args: list[str], raw: str) -> str:
     """Dispatch to web search or URL fetch based on flags."""

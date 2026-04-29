@@ -127,6 +127,23 @@ CREATE TABLE IF NOT EXISTS skill_log (
     error        TEXT,
     executed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- HTTP queue task records — one row per POST /queue request.
+-- Status lifecycle: queued → running → complete | failed | cancelled
+CREATE TABLE IF NOT EXISTS queue_tasks (
+    id            TEXT PRIMARY KEY,
+    prompt        TEXT NOT NULL,
+    session       TEXT DEFAULT 'new',
+    status        TEXT NOT NULL,    -- 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
+    result        TEXT,
+    error         TEXT,
+    priority      INTEGER DEFAULT 1,
+    skills_json   TEXT DEFAULT '[]',
+    source        TEXT,
+    created_at    TEXT,
+    started_at    TEXT,
+    completed_at  TEXT
+);
 """
 
 # ── Connection ─────────────────────────────────────────────────────────────────
